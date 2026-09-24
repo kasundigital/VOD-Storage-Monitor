@@ -58,7 +58,42 @@
   <details><summary>Raw diff</summary><pre id="snapRawDiff">{{data.snapraid.diff_raw or 'No output returned'}}</pre></details>
 </div></section>
 
-<section class="panel"><div class="panel-title"><h2>Physical Disks</h2><span>{{data.disks|length}} detected</span></div><div class="table-wrap"><table><thead><tr><th>Device</th><th>Model</th><th>Serial</th><th>Size</th><th>SMART</th><th>Temp</th><th>Power Hours</th><th>Defects/Pending</th><th>Details</th></tr></thead><tbody>{% for d in data.disks %}<tr><td><b>{{d.name}}</b></td><td>{{d.model}}</td><td class="mono">{{d.serial}}</td><td>{{d.size_h}}</td><td><span class="pill {{'ok' if d.smart.health=='Healthy' else ('bad' if d.smart.health=='FAILED' else 'warn')}}">{{d.smart.health}}</span></td><td class="{{'hot' if d.smart.temp and d.smart.temp >= 50 else ''}}">{{d.smart.temp if d.smart.temp is not none else '-'}}°C</td><td>{{d.smart.power_hours if d.smart.power_hours is not none else '-'}}</td><td>{{d.smart.pending if d.smart.pending is not none else (d.smart.reallocated if d.smart.reallocated is not none else '-')}}</td><td class="mono">{{d.smart.error if d.smart.error else '-'}}</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="panel">
+  <div class="panel-title"><h2>Physical Disks</h2><span>{{data.disks|length}} detected</span></div>
+  {% for kind in ['HDD','SSD','NVMe'] %}
+    {% set group = data.disks|selectattr('kind','equalto',kind)|list %}
+    {% if group %}
+    <div class="disk-group">
+      <div class="disk-group-title"><b>{{kind}}</b><span>{{group|length}} disk{{'' if group|length == 1 else 's'}}</span></div>
+      <div class="table-wrap">
+        <table class="disk-table">
+          <thead><tr><th>Device</th><th>Size</th><th>Usage</th><th>SMART</th><th>Temp</th><th>Defects / Pending</th></tr></thead>
+          <tbody>
+          {% for d in group %}
+            <tr>
+              <td><b>{{d.name}}</b></td>
+              <td>{{d.size_h}}</td>
+              <td class="usage-cell">
+                {% if d.usage and d.usage.pct is not none %}
+                  <div class="usage-line"><span>{{d.usage.used_h}} used</span><b>{{d.usage.pct}}%</b></div>
+                  <div class="bar disk-bar"><i style="width:{{d.usage.pct}}%"></i></div>
+                  <small>{{d.usage.mount}}{% if d.usage.source and d.usage.source != d.usage.mount %} · {{d.usage.source}}{% endif %}</small>
+                {% else %}
+                  <span class="muted">Not mounted</span>
+                {% endif %}
+              </td>
+              <td><span class="pill {{'ok' if d.smart.health=='Healthy' else ('bad' if d.smart.health=='FAILED' else 'warn')}}">{{d.smart.health}}</span></td>
+              <td class="{{'hot' if d.smart.temp and d.smart.temp >= 50 else ''}}">{{d.smart.temp if d.smart.temp is not none else '-'}}°C</td>
+              <td>{{d.smart.pending if d.smart.pending is not none else (d.smart.reallocated if d.smart.reallocated is not none else '-')}}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  {% endfor %}
+</section>
 
 {% if data.docker.enabled %}<section class="panel"><div class="panel-title"><h2>Docker Containers</h2></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Image</th><th>Status</th><th>Ports</th></tr></thead><tbody>{% for c in data.docker.containers %}<tr><td>{{c.Names}}</td><td>{{c.Image}}</td><td>{{c.Status}}</td><td>{{c.Ports}}</td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
 
