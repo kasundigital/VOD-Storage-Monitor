@@ -4,7 +4,7 @@
 <section class="grid hero">
 <div class="card"><span>VOD Pool</span><strong>{{data.storage.vod.size_h}}</strong><small>{{data.storage.vod.used_h}} used · {{data.storage.vod.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.vod.pct}}%"></i></div><b>{{data.storage.vod.pct}}%</b></div>
 <div class="card"><span>Docker RAID</span><strong>{{data.storage.docker.size_h}}</strong><small>{{data.storage.docker.used_h}} used · {{data.storage.docker.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.docker.pct}}%"></i></div><b>{{data.storage.docker.pct}}%</b></div>
-<div class="card"><span>SnapRAID</span><strong>{{data.snapraid.protection}}</strong><small>Last sync: {{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</small><b>{% if data.snapraid.diff_ok %}{{data.snapraid.pending_total}} pending change(s){% else %}Diff unavailable{% endif %}</b></div>
+<div class="card"><span>SnapRAID</span><strong>{{data.snapraid.protection}}</strong><small>Last sync: {{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</small><b>{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total}} pending change(s){% else %}Diff unavailable{% endif %}</b></div>
 <div class="card"><span>Disk Health</span><strong>{{data.disk_health.healthy}} / {{data.disk_health.total}}</strong><small>{{data.disk_health.warning}} warning · {{data.disk_health.failed}} failed</small><b>Max temp: {{data.disk_health.max_temp if data.disk_health.max_temp is not none else '-'}}°C</b></div>
 </section>
 
@@ -24,9 +24,9 @@
 
   <div class="snap-meta">
     <div><span>Last sync</span><b>{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</b></div>
-    <div><span>Pending changes</span><b>{{data.snapraid.pending_total}}</b></div>
+    <div><span>Pending changes</span><b>{% if data.snapraid.maintenance_running %}Updating{% else %}{{data.snapraid.pending_total}}{% endif %}</b></div>
     <div><span>Status</span><b>{{'OK' if data.snapraid.status_ok else 'Failed'}}</b></div>
-    <div><span>Diff</span><b>{{'OK' if data.snapraid.diff_ok else 'Failed'}}</b></div>
+    <div><span>Diff</span><b>{% if data.snapraid.maintenance_running %}Paused during {{data.snapraid.job.name}}{% else %}{{'OK' if data.snapraid.diff_ok else 'Failed'}}{% endif %}</b></div>
   </div>
 
   {% if actions %}
@@ -51,7 +51,7 @@
   {% endif %}
 
   {% if not data.snapraid.status_ok %}<div class="warning">SnapRAID status command failed (exit {{data.snapraid.status_rc}}). Check Raw status below.</div>{% endif %}
-  {% if not data.snapraid.diff_ok %}<div class="warning">SnapRAID diff command failed (exit {{data.snapraid.diff_rc}}).</div>{% endif %}
+  {% if data.snapraid.diff_ok is sameas false %}<div class="warning">SnapRAID diff command failed (exit {{data.snapraid.diff_rc}}).</div>{% endif %}
   {% if data.snapraid.warnings %}<div class="warning">{{data.snapraid.warnings|join(' · ')}}</div>{% endif %}
   <details><summary>Parity paths</summary><pre>{{data.snapraid.config.parity_paths|join('\n') if data.snapraid.config.parity_paths else 'No parity paths detected'}}</pre></details>
   <details><summary>Raw status</summary><pre>{{data.snapraid.status_raw or 'No output returned'}}</pre></details>
@@ -99,7 +99,7 @@ async function pollJob(){
     const output=document.getElementById('jobOutput');
     setActionButtons(!!j.running);
     title.textContent=j.running ? ('Running: '+(j.name||'SnapRAID')) : (j.status==='idle' ? 'No active SnapRAID job' : ('Last job: '+(j.name||'SnapRAID')+' · '+j.status));
-    elapsed.textContent=j.running ? (j.elapsed+'s') : (j.status||'Idle');
+    elapsed.textContent=j.running ? ((j.progress ? j.progress.percent+'% · ' : '')+j.elapsed+'s') : (j.status||'Idle');
     output.textContent=j.output||'Job output will appear here while a maintenance task is running.';
     if(j.running) output.scrollTop=output.scrollHeight;
   }catch(e){}
