@@ -1,6 +1,6 @@
 services:
   vod-monitor:
-    build: .
+    image: ghcr.io/kasundigital/vod-storage-monitor:latest
     container_name: vod-monitor
     environment:
       - TZ=America/New_York
