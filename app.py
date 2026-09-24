@@ -146,30 +146,75 @@ def list_disks():
         if d.get('type')!='disk': continue
         name=d['name']; dev='/dev/'+name
         smart={'health':'Unknown','temp':None,'power_hours':None,'reallocated':None,'pending':None,'error':None}
-        rc2,sout=run(['smartctl','-x','-j',dev],timeout=20)
+        rc2,sout=run(['smartctl','-x','-j',dev],timeout=25)
         smart_serial=''
+        j=None
         try:
             j=json.loads(sout)
+        except Exception:
+            j=None
+
+        # SAS disks can need explicit SCSI mode depending on the HBA/expander.
+        if (not j or not j.get('device')) and name.startswith('sd'):
+            rc3,sout3=run(['smartctl','-x','-j','-d','scsi',dev],timeout=25)
+            try:
+                j3=json.loads(sout3)
+                if j3.get('device'):
+                    j=j3; rc2=rc3; sout=sout3
+            except Exception:
+                pass
+
+        try:
+            if not j:
+                raise ValueError('No valid smartctl JSON returned')
+
             passed=j.get('smart_status',{}).get('passed')
-            if passed is True: smart['health']='Healthy'
-            elif passed is False: smart['health']='FAILED'
+            protocol=(j.get('device',{}).get('protocol') or '').upper()
+            nvme_health=j.get('nvme_smart_health_information_log',{})
+            nvme_critical=nvme_health.get('critical_warning')
+
+            if passed is True:
+                smart['health']='Healthy'
+            elif passed is False:
+                smart['health']='FAILED'
+            elif protocol == 'NVME' and nvme_critical == 0:
+                smart['health']='Healthy'
             elif j.get('smart_support',{}).get('available') is False:
                 smart['health']='Unsupported'
             elif j.get('device',{}):
                 smart['health']='Available'
+
             t=j.get('temperature',{}).get('current')
-            smart['temp']=t
+            if t in (None, 0):
+                t=(j.get('scsi_environmental_reports',{})
+                    .get('temperature_1',{})
+                    .get('current'))
+            if t in (None, 0) and protocol == 'NVME':
+                t=nvme_health.get('temperature')
+            smart['temp']=t if t not in (0,) else None
+
             smart['power_hours']=j.get('power_on_time',{}).get('hours')
             smart_serial=(j.get('serial_number') or '').strip()
+
             attrs=j.get('ata_smart_attributes',{}).get('table',[])
             amap={a.get('name'):a.get('raw',{}).get('value') for a in attrs}
             smart['reallocated']=amap.get('Reallocated_Sector_Ct')
             smart['pending']=amap.get('Current_Pending_Sector')
+
+            # SAS/SCSI drives expose grown defects instead of ATA pending/reallocated counters.
+            if smart['reallocated'] is None:
+                smart['reallocated']=j.get('scsi_grown_defect_list')
+
             msgs=j.get('smartctl',{}).get('messages',[])
             if msgs:
-                smart['error']='; '.join(str(m.get('string','')) for m in msgs if m.get('string'))[-500:] or None
-        except Exception:
-            smart['error']=sout[-500:] if sout else f'smartctl exit code {rc2}'
+                smart['error']='; '.join(str(m.get('string','')) for m in msgs if m.get('string'))[-700:] or None
+
+            # smartctl uses bitmask exit codes; JSON can still contain valid SMART data.
+            if rc2 and smart['health'] in ('Unknown','Available') and not smart['error']:
+                smart['error']=f'smartctl exit code {rc2}'
+        except Exception as e:
+            smart['error']=(sout[-700:] if sout else str(e)) or f'smartctl exit code {rc2}'
+
         disks.append({'name':name,'dev':dev,'size':int(d.get('size') or 0),'size_h':human_bytes(d.get('size') or 0),
                       'model':(d.get('model') or '').strip(),'serial':((d.get('serial') or '').strip() or smart_serial),'smart':smart})
     return disks
