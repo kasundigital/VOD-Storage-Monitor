@@ -1,4 +1,5 @@
 import os, re, json, time, threading, subprocess, sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
@@ -17,7 +18,28 @@ BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
-cache = {'data': {}, 'updated': None, 'collecting': False}
+def empty_dashboard():
+    return {
+        'storage': {
+            'vod': {'path':'/mnt/vod','size':0,'used':0,'avail':0,'pct':0,'size_h':'-','used_h':'-','avail_h':'-'},
+            'docker': {'path':'/docker','size':0,'used':0,'avail':0,'pct':0,'size_h':'-','used_h':'-','avail_h':'-'}
+        },
+        'raid': [],
+        'snapraid': {
+            'status_rc':None,'diff_rc':None,'status_ok':False,'diff_ok':False,
+            'status_raw':'','diff_raw':'',
+            'changes':{'equal':0,'added':0,'removed':0,'updated':0,'moved':0,'copied':0,'restored':0},
+            'pending_total':0,'protection':'Initializing','warnings':[],'last_sync':None
+        },
+        'disks': [],
+        'docker': {'enabled':ENABLE_DOCKER,'containers':[]},
+        'hostname': (Path('/host/etc/hostname').read_text().strip() if Path('/host/etc/hostname').exists() else os.uname().nodename),
+        'app_version': APP_VERSION,
+        'build_sha': BUILD_SHA[:7] if BUILD_SHA else 'dev',
+        'disk_health': {'total':0,'healthy':0,'failed':0,'warning':0,'max_temp':None}
+    }
+
+cache = {'data': empty_dashboard(), 'updated': None, 'collecting': False}
 lock = threading.Lock()
 
 
@@ -138,89 +160,84 @@ def snapraid_summary():
             'last_sync':snapraid_last_sync()}
 
 
+def smart_for_disk(d):
+    name=d['name']; dev='/dev/'+name
+    smart={'health':'Unknown','temp':None,'power_hours':None,'reallocated':None,'pending':None,'error':None}
+    rc2,sout=run(['smartctl','-x','-j',dev],timeout=25)
+    smart_serial=''
+    j=None
+    try:
+        j=json.loads(sout)
+    except Exception:
+        j=None
+
+    if (not j or not j.get('device')) and name.startswith('sd'):
+        rc3,sout3=run(['smartctl','-x','-j','-d','scsi',dev],timeout=25)
+        try:
+            j3=json.loads(sout3)
+            if j3.get('device'):
+                j=j3; rc2=rc3; sout=sout3
+        except Exception:
+            pass
+
+    try:
+        if not j:
+            raise ValueError('No valid smartctl JSON returned')
+
+        passed=j.get('smart_status',{}).get('passed')
+        protocol=(j.get('device',{}).get('protocol') or '').upper()
+        nvme_health=j.get('nvme_smart_health_information_log',{})
+        nvme_critical=nvme_health.get('critical_warning')
+
+        if passed is True:
+            smart['health']='Healthy'
+        elif passed is False:
+            smart['health']='FAILED'
+        elif protocol == 'NVME' and nvme_critical == 0:
+            smart['health']='Healthy'
+        elif j.get('smart_support',{}).get('available') is False:
+            smart['health']='Unsupported'
+        elif j.get('device',{}):
+            smart['health']='Available'
+
+        t=j.get('temperature',{}).get('current')
+        if t in (None, 0):
+            t=(j.get('scsi_environmental_reports',{}).get('temperature_1',{}).get('current'))
+        if t in (None, 0) and protocol == 'NVME':
+            t=nvme_health.get('temperature')
+        smart['temp']=t if t not in (0,) else None
+
+        smart['power_hours']=j.get('power_on_time',{}).get('hours')
+        smart_serial=(j.get('serial_number') or '').strip()
+
+        attrs=j.get('ata_smart_attributes',{}).get('table',[])
+        amap={a.get('name'):a.get('raw',{}).get('value') for a in attrs}
+        smart['reallocated']=amap.get('Reallocated_Sector_Ct')
+        smart['pending']=amap.get('Current_Pending_Sector')
+        if smart['reallocated'] is None:
+            smart['reallocated']=j.get('scsi_grown_defect_list')
+
+        msgs=j.get('smartctl',{}).get('messages',[])
+        if msgs:
+            smart['error']='; '.join(str(m.get('string','')) for m in msgs if m.get('string'))[-700:] or None
+        if rc2 and smart['health'] in ('Unknown','Available') and not smart['error']:
+            smart['error']=f'smartctl exit code {rc2}'
+    except Exception as e:
+        smart['error']=(sout[-700:] if sout else str(e)) or f'smartctl exit code {rc2}'
+
+    return {'name':name,'dev':dev,'size':int(d.get('size') or 0),'size_h':human_bytes(d.get('size') or 0),
+            'model':(d.get('model') or '').strip(),'serial':((d.get('serial') or '').strip() or smart_serial),'smart':smart}
+
+
 def list_disks():
     rc,out=run(['lsblk','-J','-b','-d','-o','NAME,SIZE,MODEL,SERIAL,TYPE'])
     if rc: return []
-    try: items=json.loads(out).get('blockdevices',[])
+    try: items=[d for d in json.loads(out).get('blockdevices',[]) if d.get('type')=='disk']
     except: return []
-    disks=[]
-    for d in items:
-        if d.get('type')!='disk': continue
-        name=d['name']; dev='/dev/'+name
-        smart={'health':'Unknown','temp':None,'power_hours':None,'reallocated':None,'pending':None,'error':None}
-        rc2,sout=run(['smartctl','-x','-j',dev],timeout=25)
-        smart_serial=''
-        j=None
-        try:
-            j=json.loads(sout)
-        except Exception:
-            j=None
-
-        # SAS disks can need explicit SCSI mode depending on the HBA/expander.
-        if (not j or not j.get('device')) and name.startswith('sd'):
-            rc3,sout3=run(['smartctl','-x','-j','-d','scsi',dev],timeout=25)
-            try:
-                j3=json.loads(sout3)
-                if j3.get('device'):
-                    j=j3; rc2=rc3; sout=sout3
-            except Exception:
-                pass
-
-        try:
-            if not j:
-                raise ValueError('No valid smartctl JSON returned')
-
-            passed=j.get('smart_status',{}).get('passed')
-            protocol=(j.get('device',{}).get('protocol') or '').upper()
-            nvme_health=j.get('nvme_smart_health_information_log',{})
-            nvme_critical=nvme_health.get('critical_warning')
-
-            if passed is True:
-                smart['health']='Healthy'
-            elif passed is False:
-                smart['health']='FAILED'
-            elif protocol == 'NVME' and nvme_critical == 0:
-                smart['health']='Healthy'
-            elif j.get('smart_support',{}).get('available') is False:
-                smart['health']='Unsupported'
-            elif j.get('device',{}):
-                smart['health']='Available'
-
-            t=j.get('temperature',{}).get('current')
-            if t in (None, 0):
-                t=(j.get('scsi_environmental_reports',{})
-                    .get('temperature_1',{})
-                    .get('current'))
-            if t in (None, 0) and protocol == 'NVME':
-                t=nvme_health.get('temperature')
-            smart['temp']=t if t not in (0,) else None
-
-            smart['power_hours']=j.get('power_on_time',{}).get('hours')
-            smart_serial=(j.get('serial_number') or '').strip()
-
-            attrs=j.get('ata_smart_attributes',{}).get('table',[])
-            amap={a.get('name'):a.get('raw',{}).get('value') for a in attrs}
-            smart['reallocated']=amap.get('Reallocated_Sector_Ct')
-            smart['pending']=amap.get('Current_Pending_Sector')
-
-            # SAS/SCSI drives expose grown defects instead of ATA pending/reallocated counters.
-            if smart['reallocated'] is None:
-                smart['reallocated']=j.get('scsi_grown_defect_list')
-
-            msgs=j.get('smartctl',{}).get('messages',[])
-            if msgs:
-                smart['error']='; '.join(str(m.get('string','')) for m in msgs if m.get('string'))[-700:] or None
-
-            # smartctl uses bitmask exit codes; JSON can still contain valid SMART data.
-            if rc2 and smart['health'] in ('Unknown','Available') and not smart['error']:
-                smart['error']=f'smartctl exit code {rc2}'
-        except Exception as e:
-            smart['error']=(sout[-700:] if sout else str(e)) or f'smartctl exit code {rc2}'
-
-        disks.append({'name':name,'dev':dev,'size':int(d.get('size') or 0),'size_h':human_bytes(d.get('size') or 0),
-                      'model':(d.get('model') or '').strip(),'serial':((d.get('serial') or '').strip() or smart_serial),'smart':smart})
+    workers=min(8, max(1, len(items)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        disks=list(pool.map(smart_for_disk, items))
     return disks
-
 
 def docker_status():
     if not ENABLE_DOCKER: return {'enabled':False,'containers':[]}
@@ -284,15 +301,11 @@ def logout():
 @app.route('/')
 @auth_required
 def index():
-    required=('storage','raid','snapraid','disks','disk_health','hostname','app_version','build_sha')
-    if not cache.get('updated') or not all(k in cache.get('data',{}) for k in required):
-        collect(force=True)
-    data=cache.get('data') or {}
-    if not all(k in data for k in required):
-        # Never hand an incomplete cache to Jinja. Return a friendly startup page instead.
-        return ('Dashboard data is still initializing. Please refresh in a few seconds.', 503, {'Retry-After':'5'})
+    if not cache.get('updated') and not cache.get('collecting'):
+        threading.Thread(target=collect,daemon=True).start()
+    data=cache.get('data') or empty_dashboard()
     c=db(); events=c.execute('SELECT ts,kind,status,message,duration FROM events ORDER BY id DESC LIMIT 20').fetchall(); c.close()
-    return render_template('index.html', data=data, updated=cache['updated'], actions=ENABLE_ACTIONS, events=events)
+    return render_template('index.html', data=data, updated=cache['updated'] or 'initializing', actions=ENABLE_ACTIONS, events=events)
 
 @app.route('/api/status')
 @auth_required
