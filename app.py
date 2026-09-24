@@ -12,6 +12,8 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
+APP_VERSION = os.getenv('APP_VERSION', '0.2.0')
+BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -244,6 +246,8 @@ def collect():
             'disks': list_disks(),
             'docker': docker_status(),
             'hostname': (Path('/host/etc/hostname').read_text().strip() if Path('/host/etc/hostname').exists() else os.uname().nodename),
+            'app_version': APP_VERSION,
+            'build_sha': BUILD_SHA[:7] if BUILD_SHA else 'dev',
         }
         data['disk_health']={
             'total':len(data['disks']),
