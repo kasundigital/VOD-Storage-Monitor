@@ -144,7 +144,7 @@ def snapraid_summary():
     for key in ['equal','added','removed','updated','moved','copied','restored']:
         m=re.search(rf'^\s*([0-9]+)\s+{key}\s*$', diff, re.M)
         pending[key]=int(m.group(1)) if m else 0
-    warning=[x.strip() for x in (status+'\n'+diff).splitlines() if 'WARNING!' in x]
+    warning=list(dict.fromkeys(x.strip() for x in (status+'\n'+diff).splitlines() if 'WARNING!' in x))
     pending_total=sum(v for k,v in pending.items() if k!='equal')
     if not status_ok:
         protection='Unavailable'
