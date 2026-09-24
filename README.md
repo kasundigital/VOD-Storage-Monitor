@@ -10,7 +10,7 @@ Purpose-built dashboard for a mergerFS + SnapRAID + mdadm VOD server.
 - SnapRAID status, last sync estimate, warnings, and pending diff counts
 - SMART health, temperature, power-on hours, pending/reallocated sectors
 - Maintenance history stored in SQLite
-- Optional SnapRAID Sync / Scrub buttons
+- SnapRAID Check Now, Status, Diff, Sync, 10% Scrub, Full Scrub, live job output, cancel control, and maintenance history
 - Optional Docker container list
 - Responsive desktop/mobile dashboard
 - Password login
@@ -71,15 +71,26 @@ docker image prune -f
 
 Monitoring is read-only by default.
 
-To enable Sync / Scrub from the UI, set:
+To enable the authenticated SnapRAID maintenance controls, set:
 
-```yaml
+```env
 ENABLE_ACTIONS=true
 ```
 
-and change the `/mnt` mount from `:ro` to `:rw`.
+The supplied Compose file mounts `/mnt` read/write so Sync and Scrub can update parity when actions are enabled. Keep `ENABLE_ACTIONS=false` if you only want monitoring.
 
-This gives the dashboard write access to your storage. Only enable it on a trusted/private network and use a strong password.
+Available controls:
+
+- **Check Now** — runs SnapRAID status then diff
+- **Status** — current SnapRAID array status
+- **Diff** — pending added/updated/removed/moved files
+- **Start Sync** — updates parity for pending changes
+- **Scrub 10%** — routine partial scrub
+- **Full Scrub** — verifies the entire protected set
+- **Cancel Job** — requests termination of the currently running dashboard job
+- Live output, elapsed time, result state, and SQLite maintenance history
+
+Only enable actions on a trusted/private network and use a strong administrator password.
 
 ## Docker monitoring
 
