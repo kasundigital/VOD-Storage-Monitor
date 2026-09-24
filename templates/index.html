@@ -16,17 +16,17 @@
   </div>
 
   <div class="kv">
-    <span>Added</span><b>{{data.snapraid.changes.added}}</b>
-    <span>Updated</span><b>{{data.snapraid.changes.updated}}</b>
-    <span>Removed</span><b>{{data.snapraid.changes.removed}}</b>
-    <span>Moved</span><b>{{data.snapraid.changes.moved}}</b>
+    <span>Added</span><b id="snapAdded">{{data.snapraid.changes.added}}</b>
+    <span>Updated</span><b id="snapUpdated">{{data.snapraid.changes.updated}}</b>
+    <span>Removed</span><b id="snapRemoved">{{data.snapraid.changes.removed}}</b>
+    <span>Moved</span><b id="snapMoved">{{data.snapraid.changes.moved}}</b>
   </div>
 
   <div class="snap-meta">
-    <div><span>Last sync</span><b>{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</b></div>
-    <div><span>Pending changes</span><b>{% if data.snapraid.maintenance_running %}Updating{% else %}{{data.snapraid.pending_total}}{% endif %}</b></div>
-    <div><span>Status</span><b>{{'OK' if data.snapraid.status_ok else 'Failed'}}</b></div>
-    <div><span>Diff</span><b>{% if data.snapraid.maintenance_running %}Paused during {{data.snapraid.job.name}}{% else %}{{'OK' if data.snapraid.diff_ok else 'Failed'}}{% endif %}</b></div>
+    <div><span>Last sync</span><b id="snapLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</b></div>
+    <div><span>Pending changes</span><b id="snapPending">{% if data.snapraid.maintenance_running %}Updating{% else %}{{data.snapraid.pending_total}}{% endif %}</b></div>
+    <div><span>Status</span><b id="snapStatus">{{'OK' if data.snapraid.status_ok else 'Failed'}}</b></div>
+    <div><span>Diff</span><b id="snapDiff">{% if data.snapraid.maintenance_running %}Paused during {{data.snapraid.job.name}}{% else %}{{'OK' if data.snapraid.diff_ok else 'Failed'}}{% endif %}</b></div>
   </div>
 
   {% if actions %}
@@ -110,9 +110,27 @@ async function pollJob(){
     lastJobRunning = !!j.running;
   }catch(e){}
 }
-setInterval(()=>fetch('/api/status').then(r=>r.json()).then(j=>{
-  document.getElementById('updated').textContent=j.updated||'';
-}),30000);
+async function refreshStatus(){
+  try{
+    const r=await fetch('/api/status');
+    const j=await r.json();
+    document.getElementById('updated').textContent=j.updated||'';
+    if(j.snapraid){
+      const s=j.snapraid;
+      const set=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
+      set('snapAdded', s.changes?.added ?? 0);
+      set('snapUpdated', s.changes?.updated ?? 0);
+      set('snapRemoved', s.changes?.removed ?? 0);
+      set('snapMoved', s.changes?.moved ?? 0);
+      set('snapPending', s.maintenance_running ? 'Updating' : (s.pending_total ?? 0));
+      set('snapStatus', s.status_ok ? 'OK' : 'Failed');
+      set('snapDiff', s.maintenance_running ? ('Paused during '+(s.job?.name||'maintenance')) : (s.diff_ok ? 'OK' : 'Failed'));
+      set('snapLastSync', s.last_sync?.display || 'Unknown');
+    }
+  }catch(e){}
+}
+setInterval(refreshStatus,10000);
+refreshStatus();
 setInterval(pollJob,2000);
 pollJob();
 </script>
