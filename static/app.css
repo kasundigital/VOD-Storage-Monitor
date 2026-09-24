@@ -21,3 +21,15 @@
 .info-note{margin:0 16px 14px;padding:10px 12px;border:1px solid rgba(110,168,254,.24);background:rgba(110,168,254,.06);color:#bdd5ff;border-radius:8px}
 @media(max-width:700px){.snap-meta{grid-template-columns:1fr 1fr}.action-grid{display:grid;grid-template-columns:1fr 1fr}.action-btn{width:100%}}
 @media(max-width:430px){.snap-meta{grid-template-columns:1fr}.action-grid{grid-template-columns:1fr}}
+
+.schedule-wrap{padding:16px}
+.schedule-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.field{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px;font-weight:700}
+.field input[type="time"],.field select{width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:8px;background:#111827;color:var(--text);font:inherit}
+.toggle-field{justify-content:space-between;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.025)}
+.toggle-field input{width:18px;height:18px}
+.schedule-footer{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+.schedule-times{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}
+#scheduleMessage{margin-top:9px;min-height:18px}
+@media(max-width:850px){.schedule-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.schedule-grid{grid-template-columns:1fr}.schedule-footer{align-items:stretch;flex-direction:column}.schedule-footer button{width:100%}}
