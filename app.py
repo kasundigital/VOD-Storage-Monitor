@@ -13,7 +13,7 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.3.3')
+APP_VERSION = os.getenv('APP_VERSION', '0.3.4')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -227,7 +227,7 @@ def snapraid_summary():
         diff_ok = None
     else:
         rc2, diff = run(['snapraid', '-c', SNAPRAID_CONFIG, 'diff'], timeout=120)
-        diff_ok = (rc2 == 0 and bool(diff.strip()))
+        diff_ok = (rc2 in (0, 2) and bool(diff.strip()))
 
     pending = {}
     for key in ['equal', 'added', 'removed', 'updated', 'moved', 'copied', 'restored']:
@@ -466,7 +466,7 @@ def action(name):
                     rc2,out2=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'diff'])
                 else:
                     rc2,out2=rc1,'Diff skipped because status failed.'
-                rc = rc1 if rc1 else rc2
+                rc = rc1 if rc1 else (0 if rc2 in (0, 2) else rc2)
                 out = '=== STATUS ===\n'+out1+'\n\n=== DIFF ===\n'+out2
             else:
                 rc,out=run_job_command(allowed[name])
