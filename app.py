@@ -14,7 +14,7 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.4.0')
+APP_VERSION = os.getenv('APP_VERSION', '0.4.1')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -486,14 +486,96 @@ def smart_for_disk(d):
             'model':(d.get('model') or '').strip(),'serial':((d.get('serial') or '').strip() or smart_serial),'smart':smart}
 
 
+def disk_kind(d):
+    name = str(d.get('name') or '')
+    if name.startswith('nvme'):
+        return 'NVMe'
+    rota = d.get('rota')
+    if rota in (1, True, '1'):
+        return 'HDD'
+    return 'SSD'
+
+
+def disk_descendants(name):
+    rc,out=run(['lsblk','-nrpo','NAME','/dev/'+name],timeout=10)
+    if rc:
+        return {name}
+    return {Path(line.strip()).name for line in out.splitlines() if line.strip()}
+
+
+def usage_from_mount(mountpoint, source=None):
+    if not mountpoint or mountpoint == '[SWAP]':
+        return None
+    info=get_df(mountpoint)
+    if info.get('error'):
+        return None
+    return {
+        'mount': mountpoint,
+        'source': source or mountpoint,
+        'pct': info.get('pct',0),
+        'used_h': info.get('used_h','-'),
+        'avail_h': info.get('avail_h','-'),
+        'size_h': info.get('size_h','-')
+    }
+
+
+def disk_usage(name):
+    # First prefer filesystems mounted directly from this physical disk/partition.
+    rc,out=run(['lsblk','-nrpo','NAME,MOUNTPOINT','/dev/'+name],timeout=10)
+    direct=[]
+    if rc == 0:
+        for line in out.splitlines():
+            parts=line.split(None,1)
+            if len(parts)==2 and parts[1] and parts[1] != '[SWAP]':
+                u=usage_from_mount(parts[1], Path(parts[0]).name)
+                if u:
+                    direct.append(u)
+    if direct:
+        # Prefer the main filesystem over small boot mounts.
+        direct.sort(key=lambda x: (x['mount'] not in ('/docker','/'), x['mount']))
+        return direct[0]
+
+    # RAID members do not have their own mountpoint. Show the usage of the
+    # mounted md array they belong to so every physical SSD/NVMe still has
+    # a meaningful usage bar.
+    members=disk_descendants(name)
+    mdtext=Path('/proc/mdstat').read_text(errors='ignore') if Path('/proc/mdstat').exists() else ''
+    candidates=[]
+    for block in re.split(r'\n(?=md\d+\s*:)', mdtext):
+        m=re.match(r'(md\d+)\s*:', block)
+        if not m:
+            continue
+        md=m.group(1)
+        if not any(re.search(r'(?<![A-Za-z0-9])'+re.escape(member)+r'\[', block) for member in members):
+            continue
+        rc2,target=run(['findmnt','-n','-o','TARGET','/dev/'+md],timeout=10)
+        target=(target or '').strip()
+        if rc2 == 0 and target:
+            u=usage_from_mount(target, md)
+            if u:
+                candidates.append(u)
+    if candidates:
+        candidates.sort(key=lambda x: (x['mount'] not in ('/docker','/'), x['mount']))
+        return candidates[0]
+
+    return {'mount':None,'source':None,'pct':None,'used_h':'-','avail_h':'-','size_h':'-'}
+
+
 def list_disks():
-    rc,out=run(['lsblk','-J','-b','-d','-o','NAME,SIZE,MODEL,SERIAL,TYPE'])
+    rc,out=run(['lsblk','-J','-b','-d','-o','NAME,SIZE,MODEL,SERIAL,TYPE,ROTA'])
     if rc: return []
     try: items=[d for d in json.loads(out).get('blockdevices',[]) if d.get('type')=='disk']
     except: return []
     workers=min(8, max(1, len(items)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         disks=list(pool.map(smart_for_disk, items))
+    source={d.get('name'):d for d in items}
+    for disk in disks:
+        raw=source.get(disk['name'],{})
+        disk['kind']=disk_kind(raw)
+        disk['usage']=disk_usage(disk['name'])
+    order={'HDD':0,'SSD':1,'NVMe':2}
+    disks.sort(key=lambda d:(order.get(d.get('kind'),9), d.get('name','')))
     return disks
 
 def docker_status():
