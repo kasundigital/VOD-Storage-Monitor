@@ -21,7 +21,7 @@ services:
       - /etc/hostname:/host/etc/hostname:ro
       - /run/udev:/run/udev:ro
       - /proc:/host/proc:ro
-      - /mnt:/mnt:ro
+      - /mnt:/mnt:rw
       - /docker:/docker:ro
       - /dev:/dev:rw
     privileged: true
