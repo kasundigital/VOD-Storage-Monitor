@@ -9,7 +9,54 @@
 </section>
 
 <section class="two-col"><div class="panel"><div class="panel-title"><h2>RAID Arrays</h2></div><div class="table-wrap"><table><thead><tr><th>Array</th><th>Level</th><th>Status</th><th>Activity</th></tr></thead><tbody>{% for r in data.raid %}<tr><td>{{r.name}}</td><td>{{r.level}}</td><td><span class="pill {{'ok' if r.healthy else 'bad'}}">{{'Healthy' if r.healthy else 'Degraded'}}</span></td><td>{% if r.progress %}{{r.progress.type}} {{r.progress.percent}}%{% else %}Idle{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>
-<div class="panel"><div class="panel-title"><h2>SnapRAID</h2>{% if actions %}<div><button onclick="actionRun('sync')">Sync</button><button onclick="actionRun('scrub')">Scrub 10%</button></div>{% endif %}</div><div class="kv"><span>Added</span><b>{{data.snapraid.changes.added}}</b><span>Updated</span><b>{{data.snapraid.changes.updated}}</b><span>Removed</span><b>{{data.snapraid.changes.removed}}</b><span>Moved</span><b>{{data.snapraid.changes.moved}}</b></div>{% if not data.snapraid.status_ok %}<div class="warning">SnapRAID status command failed (exit {{data.snapraid.status_rc}}). Check Raw status below.</div>{% endif %}{% if not data.snapraid.diff_ok %}<div class="warning">SnapRAID diff command failed (exit {{data.snapraid.diff_rc}}).</div>{% endif %}{% if data.snapraid.warnings %}<div class="warning">{{data.snapraid.warnings|join(' · ')}}</div>{% endif %}<details><summary>Raw status</summary><pre>{{data.snapraid.status_raw or 'No output returned'}}</pre></details><details><summary>Raw diff</summary><pre>{{data.snapraid.diff_raw or 'No output returned'}}</pre></details></div></section>
+<div class="panel snap-panel">
+  <div class="panel-title">
+    <div><h2>SnapRAID</h2><span class="subtle">{{data.snapraid.config.data_disks}} data · {{data.snapraid.config.parity_levels}} parity · {{data.snapraid.config.content_copies}} content copies</span></div>
+    <span class="pill {{'ok' if data.snapraid.protection=='Protected' else ('warn' if data.snapraid.protection=='Changes Pending' else 'bad')}}">{{data.snapraid.protection}}</span>
+  </div>
+
+  <div class="kv">
+    <span>Added</span><b>{{data.snapraid.changes.added}}</b>
+    <span>Updated</span><b>{{data.snapraid.changes.updated}}</b>
+    <span>Removed</span><b>{{data.snapraid.changes.removed}}</b>
+    <span>Moved</span><b>{{data.snapraid.changes.moved}}</b>
+  </div>
+
+  <div class="snap-meta">
+    <div><span>Last sync</span><b>{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</b></div>
+    <div><span>Pending changes</span><b>{{data.snapraid.pending_total}}</b></div>
+    <div><span>Status</span><b>{{'OK' if data.snapraid.status_ok else 'Failed'}}</b></div>
+    <div><span>Diff</span><b>{{'OK' if data.snapraid.diff_ok else 'Failed'}}</b></div>
+  </div>
+
+  {% if actions %}
+  <div class="action-zone">
+    <div class="action-title">Maintenance Controls</div>
+    <div class="action-grid">
+      <button class="action-btn neutral" data-action="check" onclick="actionRun('check','Run SnapRAID status + diff check now?')">Check Now</button>
+      <button class="action-btn neutral" data-action="status" onclick="actionRun('status','Run SnapRAID status now?')">Status</button>
+      <button class="action-btn neutral" data-action="diff" onclick="actionRun('diff','Run SnapRAID diff now?')">Diff</button>
+      <button class="action-btn primary" data-action="sync" onclick="actionRun('sync','Start SnapRAID sync? This will update parity for pending files.')">Start Sync</button>
+      <button class="action-btn" data-action="scrub10" onclick="actionRun('scrub10','Start a 10% SnapRAID scrub?')">Scrub 10%</button>
+      <button class="action-btn danger-soft" data-action="scrub_full" onclick="actionRun('scrub_full','Run a FULL SnapRAID scrub? This can take a long time.')">Full Scrub</button>
+      <button id="cancelJob" class="action-btn danger" onclick="cancelJob()" disabled>Cancel Job</button>
+    </div>
+    <div id="jobBox" class="job-box">
+      <div class="job-head"><b id="jobTitle">No active SnapRAID job</b><span id="jobElapsed">Idle</span></div>
+      <pre id="jobOutput">Job output will appear here while a maintenance task is running.</pre>
+    </div>
+  </div>
+  {% else %}
+  <div class="info-note">SnapRAID controls are disabled. Set <span class="mono">ENABLE_ACTIONS=true</span> to enable Check, Sync and Scrub controls.</div>
+  {% endif %}
+
+  {% if not data.snapraid.status_ok %}<div class="warning">SnapRAID status command failed (exit {{data.snapraid.status_rc}}). Check Raw status below.</div>{% endif %}
+  {% if not data.snapraid.diff_ok %}<div class="warning">SnapRAID diff command failed (exit {{data.snapraid.diff_rc}}).</div>{% endif %}
+  {% if data.snapraid.warnings %}<div class="warning">{{data.snapraid.warnings|join(' · ')}}</div>{% endif %}
+  <details><summary>Parity paths</summary><pre>{{data.snapraid.config.parity_paths|join('\n') if data.snapraid.config.parity_paths else 'No parity paths detected'}}</pre></details>
+  <details><summary>Raw status</summary><pre>{{data.snapraid.status_raw or 'No output returned'}}</pre></details>
+  <details><summary>Raw diff</summary><pre>{{data.snapraid.diff_raw or 'No output returned'}}</pre></details>
+</div></section>
 
 <section class="panel"><div class="panel-title"><h2>Physical Disks</h2><span>{{data.disks|length}} detected</span></div><div class="table-wrap"><table><thead><tr><th>Device</th><th>Model</th><th>Serial</th><th>Size</th><th>SMART</th><th>Temp</th><th>Power Hours</th><th>Defects/Pending</th><th>Details</th></tr></thead><tbody>{% for d in data.disks %}<tr><td><b>{{d.name}}</b></td><td>{{d.model}}</td><td class="mono">{{d.serial}}</td><td>{{d.size_h}}</td><td><span class="pill {{'ok' if d.smart.health=='Healthy' else ('bad' if d.smart.health=='FAILED' else 'warn')}}">{{d.smart.health}}</span></td><td class="{{'hot' if d.smart.temp and d.smart.temp >= 50 else ''}}">{{d.smart.temp if d.smart.temp is not none else '-'}}°C</td><td>{{d.smart.power_hours if d.smart.power_hours is not none else '-'}}</td><td>{{d.smart.pending if d.smart.pending is not none else (d.smart.reallocated if d.smart.reallocated is not none else '-')}}</td><td class="mono">{{d.smart.error if d.smart.error else '-'}}</td></tr>{% endfor %}</tbody></table></div></section>
 
@@ -18,5 +65,49 @@
 <section class="panel"><div class="panel-title"><h2>Maintenance History</h2></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Status</th><th>Duration</th></tr></thead><tbody>{% for e in events %}<tr><td>{{e[0]}}</td><td>{{e[1]}}</td><td>{{e[2]}}</td><td>{{'%.1f'|format(e[4])}}s</td></tr>{% endfor %}</tbody></table></div></section>
 <footer style="padding:18px;text-align:center" class="muted">VOD Storage Monitor v{{data.app_version}} · build {{data.build_sha}}</footer>
 </main>
-<script>async function refreshNow(){await fetch('/api/refresh',{method:'POST'});setTimeout(()=>location.reload(),1500)} async function actionRun(n){if(!confirm('Run SnapRAID '+n+'?'))return;let r=await fetch('/api/action/'+n,{method:'POST'});let j=await r.json();alert(j.message||j.error);setTimeout(()=>location.reload(),1200)} setInterval(()=>fetch('/api/status').then(r=>r.json()).then(j=>{document.getElementById('updated').textContent=j.updated||''}),30000);</script>
+<script>
+async function refreshNow(){
+  await fetch('/api/refresh',{method:'POST'});
+  setTimeout(()=>location.reload(),1500);
+}
+async function actionRun(n,msg){
+  if(!confirm(msg||('Run SnapRAID '+n+'?'))) return;
+  const r=await fetch('/api/action/'+n,{method:'POST'});
+  const j=await r.json();
+  if(!r.ok){ alert(j.error||'Action failed'); return; }
+  await pollJob();
+}
+async function cancelJob(){
+  if(!confirm('Cancel the running SnapRAID job?')) return;
+  const r=await fetch('/api/action/cancel',{method:'POST'});
+  const j=await r.json();
+  if(!r.ok) alert(j.error||'Unable to cancel job');
+}
+function setActionButtons(running){
+  document.querySelectorAll('[data-action]').forEach(b=>b.disabled=running);
+  const c=document.getElementById('cancelJob');
+  if(c) c.disabled=!running;
+}
+async function pollJob(){
+  const box=document.getElementById('jobBox');
+  if(!box) return;
+  try{
+    const r=await fetch('/api/job');
+    const j=await r.json();
+    const title=document.getElementById('jobTitle');
+    const elapsed=document.getElementById('jobElapsed');
+    const output=document.getElementById('jobOutput');
+    setActionButtons(!!j.running);
+    title.textContent=j.running ? ('Running: '+(j.name||'SnapRAID')) : (j.status==='idle' ? 'No active SnapRAID job' : ('Last job: '+(j.name||'SnapRAID')+' · '+j.status));
+    elapsed.textContent=j.running ? (j.elapsed+'s') : (j.status||'Idle');
+    output.textContent=j.output||'Job output will appear here while a maintenance task is running.';
+    if(j.running) output.scrollTop=output.scrollHeight;
+  }catch(e){}
+}
+setInterval(()=>fetch('/api/status').then(r=>r.json()).then(j=>{
+  document.getElementById('updated').textContent=j.updated||'';
+}),30000);
+setInterval(pollJob,2000);
+pollJob();
+</script>
 </body></html>
