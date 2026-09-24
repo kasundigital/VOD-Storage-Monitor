@@ -23,12 +23,6 @@ services:
       - /proc:/host/proc:ro
       - /mnt:/mnt:ro
       - /docker:/docker:ro
-      - /dev:/dev:ro
-    cap_add:
-      - SYS_RAWIO
-    device_cgroup_rules:
-      - 'b 8:* rwm'
-      - 'b 9:* rwm'
-      - 'b 21:* rwm'
-      - 'b 259:* rwm'
+      - /dev:/dev:rw
+    privileged: true
     restart: unless-stopped
