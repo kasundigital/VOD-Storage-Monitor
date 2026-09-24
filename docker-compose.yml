@@ -1,0 +1,24 @@
+services:
+  vod-monitor:
+    build: .
+    container_name: vod-monitor
+    environment:
+      - TZ=America/New_York
+      - ADMIN_PASSWORD=CHANGE_ME_NOW
+      - SECRET_KEY=CHANGE_TO_A_LONG_RANDOM_SECRET
+      - REFRESH_SECONDS=60
+      - SNAPRAID_CONFIG=/etc/snapraid.conf
+      - ENABLE_ACTIONS=false
+      - ENABLE_DOCKER_MONITOR=false
+    ports:
+      - "8099:8099"
+    volumes:
+      - ./data:/data
+      - /etc/snapraid.conf:/etc/snapraid.conf:ro
+      - /proc:/host/proc:ro
+      - /mnt:/mnt:ro
+      - /docker:/docker:ro
+      - /dev:/dev:ro
+    cap_add:
+      - SYS_RAWIO
+    restart: unless-stopped
