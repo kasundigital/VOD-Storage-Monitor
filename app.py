@@ -137,7 +137,7 @@ DEFAULT_SCHEDULE = {
     'sync_time': '04:00',
     'timezone': 'UTC',
     'scrub_enabled': False,
-    'scrub_day': '0',
+    'scrub_day': '6',
     'scrub_time': '05:00'
 }
 
@@ -587,8 +587,10 @@ def action(name):
         return jsonify({'ok':False,'error':'Actions disabled. Set ENABLE_ACTIONS=true.'}),403
     ok, message = start_snapraid_job(name, 'dashboard')
     if not ok:
-        return jsonify({'ok':False,'error':message}),409 if 'already running' in message else 400
+        status = 409 if 'already running' in message else 400
+        return jsonify({'ok':False,'error':message}),status
     return jsonify({'ok':True,'message':message})
+
 
 @app.route('/api/schedule',methods=['GET','POST'])
 @auth_required
@@ -604,34 +606,12 @@ def schedule_api():
         return jsonify({'ok':False,'error':'Invalid timezone'}),400
 
     def valid_time(value):
-        return bool(re.match(r'^(?:[01]\\d|2[0-3]):[0-5]\\d
-@auth_required
-def cancel_action():
-    if not ENABLE_ACTIONS:
-        return jsonify({'ok':False,'error':'Actions disabled'}),403
-    with job_lock:
-        if not job_state.get('running'):
-            return jsonify({'ok':False,'error':'No SnapRAID job is running'}),409
-        p=job_state.get('process')
-        job_state['cancel_requested']=True
-        job_state['status']='cancelling'
-    try:
-        if p and p.poll() is None:
-            p.terminate()
-        return jsonify({'ok':True,'message':'Cancel requested'})
-    except Exception as e:
-        return jsonify({'ok':False,'error':str(e)}),500
-
-db()
-start_background_threads()
-
-if __name__=='__main__':
-    app.run(host='0.0.0.0',port=int(os.getenv('PORT','8099')),debug=False)
-, str(value or '')))
+        return bool(re.match(r'^(?:[01]\\d|2[0-3]):[0-5]\\d$', str(value or '')))
 
     sync_time = str(payload.get('sync_time','04:00'))
     scrub_time = str(payload.get('scrub_time','05:00'))
-    scrub_day = str(payload.get('scrub_day','0'))
+    scrub_day = str(payload.get('scrub_day','6'))
+
     if not valid_time(sync_time) or not valid_time(scrub_time):
         return jsonify({'ok':False,'error':'Time must be HH:MM'}),400
     if scrub_day not in {'0','1','2','3','4','5','6'}:
@@ -647,6 +627,7 @@ if __name__=='__main__':
     }
     save_schedule(cfg)
     return jsonify({'ok':True, **get_schedule()})
+
 
 @app.route('/api/action/cancel',methods=['POST'])
 @auth_required
@@ -666,7 +647,9 @@ def cancel_action():
     except Exception as e:
         return jsonify({'ok':False,'error':str(e)}),500
 
+
+db()
+start_background_threads()
+
 if __name__=='__main__':
-    db()
-    threading.Thread(target=collector_loop,daemon=True).start()
     app.run(host='0.0.0.0',port=int(os.getenv('PORT','8099')),debug=False)
