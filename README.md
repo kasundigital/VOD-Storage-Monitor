@@ -3,42 +3,69 @@
 Purpose-built dashboard for a mergerFS + SnapRAID + mdadm VOD server.
 
 ## Features
+
 - `/mnt/vod` total / used / free space and utilization
 - `/docker` NVMe RAID storage usage
 - mdadm arrays and resync/recovery progress
-- SnapRAID status, last sync estimate (latest content-file timestamp), warnings, and pending diff counts
+- SnapRAID status, last sync estimate, warnings, and pending diff counts
 - SMART health, temperature, power-on hours, pending/reallocated sectors
 - Maintenance history stored in SQLite
 - Optional SnapRAID Sync / Scrub buttons
 - Optional Docker container list
-- Responsive dark dashboard
+- Responsive desktop/mobile dashboard
 - Password login
 
-## Install
+## Quick install
 
-Copy this folder to `/docker/vod-monitor`, then:
+Create the app folder and Compose file:
 
 ```bash
+mkdir -p /docker/vod-monitor/data
 cd /docker/vod-monitor
+
+curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/docker-compose.yml -o docker-compose.yml
+```
+
+Edit your password and secret:
+
+```bash
 nano docker-compose.yml
 ```
 
-Change at least:
-
-```yaml
-ADMIN_PASSWORD=CHANGE_ME_NOW
-SECRET_KEY=CHANGE_TO_A_LONG_RANDOM_SECRET
-```
-
-Start:
+Generate a strong secret if needed:
 
 ```bash
-docker compose up -d --build
+openssl rand -hex 32
+```
+
+Pull and start the prebuilt image:
+
+```bash
+docker compose pull
+docker compose up -d
 ```
 
 Open:
 
-`http://SERVER-IP:8099`
+```text
+http://SERVER-IP:8099
+```
+
+Docker image:
+
+```text
+ghcr.io/kasundigital/vod-storage-monitor:latest
+```
+
+## Update
+
+```bash
+cd /docker/vod-monitor
+curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/docker-compose.yml -o docker-compose.yml
+docker compose pull
+docker compose up -d
+docker image prune -f
+```
 
 ## SnapRAID actions
 
@@ -68,8 +95,8 @@ and add:
 - /var/run/docker.sock:/var/run/docker.sock
 ```
 
-Note: access to the Docker socket is highly privileged. Leave this disabled unless you specifically need it.
+Access to the Docker socket is highly privileged. Leave this disabled unless you specifically need it.
 
-## Important
+## Last Sync
 
-The "Last Sync" field is derived from the newest SnapRAID `content` file modification time. This is a reliable indication that SnapRAID saved state, including when sync is run outside this dashboard, but it is not a full job history. Jobs launched through this dashboard are additionally recorded in SQLite with start/result/duration.
+The Last Sync field is derived from the newest SnapRAID `content` file modification time. Jobs launched through the dashboard are additionally recorded in SQLite with start/result/duration.
