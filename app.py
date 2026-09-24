@@ -13,7 +13,7 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.3.6')
+APP_VERSION = os.getenv('APP_VERSION', '0.3.8')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -235,8 +235,10 @@ def snapraid_summary():
         pending[key] = int(match.group(1)) if match else 0
 
     warning_source = status + ('\\n' + diff if diff else '')
+    hidden_warning = "WARNING! For 30 disks, it's recommended to use five parity levels."
     warning = list(dict.fromkeys(
-        line.strip() for line in warning_source.splitlines() if 'WARNING!' in line
+        line.strip() for line in warning_source.splitlines()
+        if 'WARNING!' in line and line.strip() != hidden_warning
     ))
     pending_total = sum(value for key, value in pending.items() if key != 'equal')
 
