@@ -234,9 +234,12 @@ def docker_status():
     return {'enabled':True,'rc':rc,'containers':containers,'error':out if rc else None}
 
 
-def collect():
+def collect(force=False):
     with lock:
-        if cache['collecting']: return
+        if cache['collecting'] and not force:
+            return False
+        if cache['collecting'] and force:
+            return False
         cache['collecting']=True
     try:
         data={
@@ -257,6 +260,7 @@ def collect():
             'max_temp':max([d['smart']['temp'] for d in data['disks'] if d['smart']['temp'] is not None] or [None])
         }
         cache['data']=data; cache['updated']=datetime.now().astimezone().isoformat()
+        return True
     finally:
         cache['collecting']=False
 
@@ -280,9 +284,15 @@ def logout():
 @app.route('/')
 @auth_required
 def index():
-    if not cache['updated']: collect()
+    required=('storage','raid','snapraid','disks','disk_health','hostname','app_version','build_sha')
+    if not cache.get('updated') or not all(k in cache.get('data',{}) for k in required):
+        collect(force=True)
+    data=cache.get('data') or {}
+    if not all(k in data for k in required):
+        # Never hand an incomplete cache to Jinja. Return a friendly startup page instead.
+        return ('Dashboard data is still initializing. Please refresh in a few seconds.', 503, {'Retry-After':'5'})
     c=db(); events=c.execute('SELECT ts,kind,status,message,duration FROM events ORDER BY id DESC LIMIT 20').fetchall(); c.close()
-    return render_template('index.html', data=cache['data'], updated=cache['updated'], actions=ENABLE_ACTIONS, events=events)
+    return render_template('index.html', data=data, updated=cache['updated'], actions=ENABLE_ACTIONS, events=events)
 
 @app.route('/api/status')
 @auth_required
