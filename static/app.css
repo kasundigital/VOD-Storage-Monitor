@@ -33,3 +33,14 @@
 #scheduleMessage{margin-top:9px;min-height:18px}
 @media(max-width:850px){.schedule-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:560px){.schedule-grid{grid-template-columns:1fr}.schedule-footer{align-items:stretch;flex-direction:column}.schedule-footer button{width:100%}}
+
+.disk-group{border-top:1px solid var(--line)}
+.disk-group:first-of-type{border-top:0}
+.disk-group-title{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:rgba(255,255,255,.02)}
+.disk-group-title b{font-size:13px;letter-spacing:.04em}
+.disk-group-title span{font-size:12px;color:var(--muted)}
+.disk-table .usage-cell{min-width:220px}
+.usage-line{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;margin-bottom:6px}
+.disk-bar{height:7px;margin:0 0 5px}
+.disk-table small{display:block;color:var(--muted);font-size:11px}
+@media(max-width:700px){.disk-table .usage-cell{min-width:180px}}
