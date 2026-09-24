@@ -1,6 +1,7 @@
 import os, re, json, time, threading, subprocess, sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from functools import wraps
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, flash
@@ -13,7 +14,7 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.3.9')
+APP_VERSION = os.getenv('APP_VERSION', '0.4.0')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -118,6 +119,10 @@ def db():
       ts TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
       message TEXT NOT NULL, duration REAL DEFAULT 0
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS settings(
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )''')
     c.commit()
     return c
 
@@ -125,6 +130,147 @@ def db():
 def log_event(kind, status, message, duration=0):
     c = db(); c.execute('INSERT INTO events(ts,kind,status,message,duration) VALUES(?,?,?,?,?)',
         (datetime.now(timezone.utc).isoformat(), kind, status, message[-12000:], duration)); c.commit(); c.close()
+
+
+DEFAULT_SCHEDULE = {
+    'sync_enabled': False,
+    'sync_time': '04:00',
+    'timezone': 'UTC',
+    'scrub_enabled': False,
+    'scrub_day': '0',
+    'scrub_time': '05:00'
+}
+
+def get_schedule():
+    cfg = dict(DEFAULT_SCHEDULE)
+    c = db()
+    rows = c.execute("SELECT key,value FROM settings WHERE key LIKE 'schedule.%'").fetchall()
+    c.close()
+    for key, value in rows:
+        name = key.split('.', 1)[1]
+        if name in ('sync_enabled', 'scrub_enabled'):
+            cfg[name] = str(value).lower() == 'true'
+        elif name in cfg:
+            cfg[name] = value
+    try:
+        tz = ZoneInfo(cfg['timezone'])
+        now_local = datetime.now(tz)
+        cfg['current_time'] = now_local.strftime('%Y-%m-%d %H:%M:%S %Z')
+    except Exception:
+        cfg['timezone'] = 'UTC'
+        now_local = datetime.now(timezone.utc)
+        cfg['current_time'] = now_local.strftime('%Y-%m-%d %H:%M:%S UTC')
+    cfg['server_time'] = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
+    return cfg
+
+def save_schedule(cfg):
+    c = db()
+    for key in ('sync_enabled','sync_time','timezone','scrub_enabled','scrub_day','scrub_time'):
+        value = cfg.get(key, DEFAULT_SCHEDULE[key])
+        if isinstance(value, bool):
+            value = 'true' if value else 'false'
+        c.execute('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                  ('schedule.' + key, str(value)))
+    c.commit()
+    c.close()
+
+def start_snapraid_job(name, source='dashboard'):
+    allowed = {
+        'status': ['snapraid','-c',SNAPRAID_CONFIG,'status'],
+        'diff': ['snapraid','-c',SNAPRAID_CONFIG,'diff'],
+        'sync': ['snapraid','-c',SNAPRAID_CONFIG,'sync'],
+        'scrub10': ['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','10'],
+        'scrub_full': ['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','100'],
+    }
+    if name not in set(allowed) | {'check'}:
+        return False, 'Unknown action'
+
+    with job_lock:
+        if job_state['running']:
+            return False, f"SnapRAID {job_state['name']} is already running"
+        job_state.update({
+            'running':True,'name':name,'started':time.time(),'finished':None,
+            'returncode':None,'status':'running','output':[],'process':None,
+            'cancel_requested':False
+        })
+
+    def task():
+        start=time.time()
+        try:
+            if name == 'check':
+                rc1,out1=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'status'])
+                if rc1 == 0:
+                    rc2,out2=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'diff'])
+                else:
+                    rc2,out2=rc1,'Diff skipped because status failed.'
+                rc = rc1 if rc1 else (0 if rc2 in (0, 2) else rc2)
+                out = '=== STATUS ===\n'+out1+'\n\n=== DIFF ===\n'+out2
+            else:
+                rc,out=run_job_command(allowed[name])
+
+            with job_lock:
+                cancelled=job_state.get('cancel_requested',False)
+                job_state['running']=False
+                job_state['finished']=time.time()
+                job_state['returncode']=rc
+                job_state['status']='cancelled' if cancelled else ('success' if rc==0 else 'failed')
+                if out:
+                    job_state['output']=out.splitlines()[-200:]
+            log_event(name,'cancelled' if cancelled else ('success' if rc==0 else 'failed'),
+                      out,time.time()-start)
+        except Exception as e:
+            with job_lock:
+                job_state['running']=False
+                job_state['finished']=time.time()
+                job_state['returncode']=999
+                job_state['status']='failed'
+                job_state['output']=[str(e)]
+            log_event(name,'failed',str(e),time.time()-start)
+        finally:
+            collect()
+
+    threading.Thread(target=task,daemon=True).start()
+    log_event(name,'started',f'{name} started from {source}',0)
+    return True, f'SnapRAID {name} started'
+
+schedule_state = {'last_sync_date': None, 'last_scrub_key': None}
+
+def scheduler_loop():
+    while True:
+        try:
+            cfg = get_schedule()
+            tz = ZoneInfo(cfg.get('timezone') or 'UTC')
+            now = datetime.now(tz)
+            hhmm = now.strftime('%H:%M')
+            today = now.strftime('%Y-%m-%d')
+
+            if cfg.get('sync_enabled') and hhmm == cfg.get('sync_time'):
+                if schedule_state.get('last_sync_date') != today:
+                    ok, _ = start_snapraid_job('sync', 'automatic schedule')
+                    if ok:
+                        schedule_state['last_sync_date'] = today
+
+            scrub_key = f"{today}-{cfg.get('scrub_day')}"
+            if cfg.get('scrub_enabled') and str(now.weekday()) == str(cfg.get('scrub_day')) and hhmm == cfg.get('scrub_time'):
+                if schedule_state.get('last_scrub_key') != scrub_key:
+                    ok, _ = start_snapraid_job('scrub10', 'automatic schedule')
+                    if ok:
+                        schedule_state['last_scrub_key'] = scrub_key
+        except Exception as e:
+            log_event('scheduler','failed',str(e),0)
+        time.sleep(20)
+
+background_lock = threading.Lock()
+background_started = False
+
+def start_background_threads():
+    global background_started
+    with background_lock:
+        if background_started:
+            return
+        background_started = True
+        threading.Thread(target=collector_loop,daemon=True,name='collector').start()
+        threading.Thread(target=scheduler_loop,daemon=True,name='scheduler').start()
 
 
 def auth_required(fn):
@@ -439,64 +585,68 @@ def api_job():
 def action(name):
     if not ENABLE_ACTIONS:
         return jsonify({'ok':False,'error':'Actions disabled. Set ENABLE_ACTIONS=true.'}),403
+    ok, message = start_snapraid_job(name, 'dashboard')
+    if not ok:
+        return jsonify({'ok':False,'error':message}),409 if 'already running' in message else 400
+    return jsonify({'ok':True,'message':message})
 
-    allowed={
-        'status': ['snapraid','-c',SNAPRAID_CONFIG,'status'],
-        'diff': ['snapraid','-c',SNAPRAID_CONFIG,'diff'],
-        'sync': ['snapraid','-c',SNAPRAID_CONFIG,'sync'],
-        'scrub10': ['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','10'],
-        'scrub_full': ['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','100'],
-    }
-    if name not in set(allowed) | {'check'}:
-        return jsonify({'ok':False,'error':'Unknown action'}),400
+@app.route('/api/schedule',methods=['GET','POST'])
+@auth_required
+def schedule_api():
+    if request.method == 'GET':
+        return jsonify(get_schedule())
 
+    payload = request.get_json(silent=True) or {}
+    tz_name = str(payload.get('timezone','UTC')).strip()
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        return jsonify({'ok':False,'error':'Invalid timezone'}),400
+
+    def valid_time(value):
+        return bool(re.match(r'^(?:[01]\\d|2[0-3]):[0-5]\\d
+@auth_required
+def cancel_action():
+    if not ENABLE_ACTIONS:
+        return jsonify({'ok':False,'error':'Actions disabled'}),403
     with job_lock:
-        if job_state['running']:
-            return jsonify({'ok':False,'error':f"SnapRAID {job_state['name']} is already running"}),409
-        job_state.update({
-            'running':True,'name':name,'started':time.time(),'finished':None,
-            'returncode':None,'status':'running','output':[],'process':None,
-            'cancel_requested':False
-        })
+        if not job_state.get('running'):
+            return jsonify({'ok':False,'error':'No SnapRAID job is running'}),409
+        p=job_state.get('process')
+        job_state['cancel_requested']=True
+        job_state['status']='cancelling'
+    try:
+        if p and p.poll() is None:
+            p.terminate()
+        return jsonify({'ok':True,'message':'Cancel requested'})
+    except Exception as e:
+        return jsonify({'ok':False,'error':str(e)}),500
 
-    def task():
-        start=time.time()
-        try:
-            if name == 'check':
-                rc1,out1=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'status'])
-                if rc1 == 0:
-                    rc2,out2=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'diff'])
-                else:
-                    rc2,out2=rc1,'Diff skipped because status failed.'
-                rc = rc1 if rc1 else (0 if rc2 in (0, 2) else rc2)
-                out = '=== STATUS ===\n'+out1+'\n\n=== DIFF ===\n'+out2
-            else:
-                rc,out=run_job_command(allowed[name])
+db()
+start_background_threads()
 
-            with job_lock:
-                cancelled=job_state.get('cancel_requested',False)
-                job_state['running']=False
-                job_state['finished']=time.time()
-                job_state['returncode']=rc
-                job_state['status']='cancelled' if cancelled else ('success' if rc==0 else 'failed')
-                if out:
-                    job_state['output']=out.splitlines()[-200:]
-            log_event(name,'cancelled' if cancelled else ('success' if rc==0 else 'failed'),
-                      out,time.time()-start)
-        except Exception as e:
-            with job_lock:
-                job_state['running']=False
-                job_state['finished']=time.time()
-                job_state['returncode']=999
-                job_state['status']='failed'
-                job_state['output']=[str(e)]
-            log_event(name,'failed',str(e),time.time()-start)
-        finally:
-            collect()
+if __name__=='__main__':
+    app.run(host='0.0.0.0',port=int(os.getenv('PORT','8099')),debug=False)
+, str(value or '')))
 
-    threading.Thread(target=task,daemon=True).start()
-    log_event(name,'started',f'{name} started from dashboard',0)
-    return jsonify({'ok':True,'message':f'SnapRAID {name} started'})
+    sync_time = str(payload.get('sync_time','04:00'))
+    scrub_time = str(payload.get('scrub_time','05:00'))
+    scrub_day = str(payload.get('scrub_day','0'))
+    if not valid_time(sync_time) or not valid_time(scrub_time):
+        return jsonify({'ok':False,'error':'Time must be HH:MM'}),400
+    if scrub_day not in {'0','1','2','3','4','5','6'}:
+        return jsonify({'ok':False,'error':'Invalid scrub day'}),400
+
+    cfg = {
+        'sync_enabled': bool(payload.get('sync_enabled')),
+        'sync_time': sync_time,
+        'timezone': tz_name,
+        'scrub_enabled': bool(payload.get('scrub_enabled')),
+        'scrub_day': scrub_day,
+        'scrub_time': scrub_time
+    }
+    save_schedule(cfg)
+    return jsonify({'ok':True, **get_schedule()})
 
 @app.route('/api/action/cancel',methods=['POST'])
 @auth_required
