@@ -120,3 +120,20 @@ Access to the Docker socket is highly privileged. Leave this disabled unless you
 ## Last Sync
 
 The Last Sync field is derived from the newest SnapRAID `content` file modification time. Jobs launched through the dashboard are additionally recorded in SQLite with start/result/duration.
+
+
+## Automatic schedule
+
+The dashboard includes a persistent scheduler stored in the monitor SQLite database.
+
+Customers can configure:
+
+- Daily automatic SnapRAID sync
+- Sync time
+- Timezone (UTC, common U.S. zones, Sri Lanka)
+- Weekly 10% scrub
+- Scrub day and time
+
+The server itself may run on UTC; the scheduler executes according to the timezone selected in the dashboard.
+
+The background collector and scheduler start under Gunicorn automatically, so no host cron or systemd timer is required.
