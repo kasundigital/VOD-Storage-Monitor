@@ -88,6 +88,7 @@ function setActionButtons(running){
   const c=document.getElementById('cancelJob');
   if(c) c.disabled=!running;
 }
+let lastJobRunning = null;
 async function pollJob(){
   const box=document.getElementById('jobBox');
   if(!box) return;
@@ -102,6 +103,11 @@ async function pollJob(){
     elapsed.textContent=j.running ? ((j.progress ? j.progress.percent+'% · ' : '')+j.elapsed+'s') : (j.status||'Idle');
     output.textContent=j.output||'Job output will appear here while a maintenance task is running.';
     if(j.running) output.scrollTop=output.scrollHeight;
+
+    if(lastJobRunning === true && j.running === false){
+      setTimeout(()=>location.reload(),700);
+    }
+    lastJobRunning = !!j.running;
   }catch(e){}
 }
 setInterval(()=>fetch('/api/status').then(r=>r.json()).then(j=>{
