@@ -13,7 +13,7 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.3.1')
+APP_VERSION = os.getenv('APP_VERSION', '0.3.2')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -215,24 +215,59 @@ def snapraid_last_sync():
 
 def snapraid_summary():
     job = public_job_state()
-    maintenance_running = job.get('running') and job.get('name') in ('sync','scrub10','scrub_full')
+    maintenance_running = job.get('running') and job.get('name') in ('sync', 'scrub10', 'scrub_full')
 
-    rc,status=run(['snapraid','-c',SNAPRAID_CONFIG,'status'],timeout=60)
+    rc, status = run(['snapraid', '-c', SNAPRAID_CONFIG, 'status'], timeout=60)
     status_ok = (rc == 0 and bool(status.strip()))
 
     if maintenance_running:
-        # SnapRAID holds its lock during sync/scrub. Running diff at the same time
-        # returns exit 2 and makes a healthy dashboard look broken.
+        # SnapRAID holds its lock during sync/scrub, so do not run diff in parallel.
         rc2 = None
         diff = ''
         diff_ok = None
     else:
-        rc2,diff=run(['snapraid','-c',SNAPRAID_CONFIG,'diff'],timeout=120)
+        rc2, diff = run(['snapraid', '-c', SNAPRAID_CONFIG, 'diff'], timeout=120)
         diff_ok = (rc2 == 0 and bool(diff.strip()))
 
-    pending={}
-    for key in ['equal','added','removed','updated','moved','copied','restored']:
-        m=re.search(rf'^\s*([0-9]+)\s+{key}\s*
+    pending = {}
+    for key in ['equal', 'added', 'removed', 'updated', 'moved', 'copied', 'restored']:
+        match = re.search(r'^\\s*([0-9]+)\\s+' + re.escape(key) + r'\\s*$', diff, re.M) if diff else None
+        pending[key] = int(match.group(1)) if match else 0
+
+    warning_source = status + ('\\n' + diff if diff else '')
+    warning = list(dict.fromkeys(
+        line.strip() for line in warning_source.splitlines() if 'WARNING!' in line
+    ))
+    pending_total = sum(value for key, value in pending.items() if key != 'equal')
+
+    if maintenance_running:
+        protection = 'Syncing' if job.get('name') == 'sync' else 'Scrubbing'
+    elif not status_ok:
+        protection = 'Unavailable'
+    elif diff_ok is False:
+        protection = 'Status OK / Diff unavailable'
+    elif pending_total == 0:
+        protection = 'Protected'
+    else:
+        protection = 'Changes Pending'
+
+    return {
+        'status_rc': rc,
+        'diff_rc': rc2,
+        'status_ok': status_ok,
+        'diff_ok': diff_ok,
+        'status_raw': status,
+        'diff_raw': diff,
+        'changes': pending,
+        'pending_total': pending_total,
+        'protection': protection,
+        'warnings': warning,
+        'last_sync': snapraid_last_sync(),
+        'config': snapraid_config_summary(),
+        'maintenance_running': maintenance_running,
+        'job': job
+    }
+
 
 def smart_for_disk(d):
     name=d['name']; dev='/dev/'+name
