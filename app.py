@@ -13,7 +13,7 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.2.0')
+APP_VERSION = os.getenv('APP_VERSION', '0.3.0')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -29,7 +29,8 @@ def empty_dashboard():
             'status_rc':None,'diff_rc':None,'status_ok':False,'diff_ok':False,
             'status_raw':'','diff_raw':'',
             'changes':{'equal':0,'added':0,'removed':0,'updated':0,'moved':0,'copied':0,'restored':0},
-            'pending_total':0,'protection':'Initializing','warnings':[],'last_sync':None
+            'pending_total':0,'protection':'Initializing','warnings':[],'last_sync':None,
+            'config':{'data_disks':0,'parity_levels':0,'content_copies':0,'parity_paths':[]}
         },
         'disks': [],
         'docker': {'enabled':ENABLE_DOCKER,'containers':[]},
@@ -41,6 +42,53 @@ def empty_dashboard():
 
 cache = {'data': empty_dashboard(), 'updated': None, 'collecting': False}
 lock = threading.Lock()
+job_lock = threading.Lock()
+job_state = {
+    'running': False, 'name': None, 'started': None, 'finished': None,
+    'returncode': None, 'status': 'idle', 'output': [], 'process': None,
+    'cancel_requested': False
+}
+
+def public_job_state():
+    with job_lock:
+        started = job_state.get('started')
+        elapsed = 0
+        if started:
+            end = time.time() if job_state.get('running') else (job_state.get('finished') or time.time())
+            elapsed = max(0, end - started)
+        return {
+            'running': job_state.get('running', False),
+            'name': job_state.get('name'),
+            'started': started,
+            'finished': job_state.get('finished'),
+            'returncode': job_state.get('returncode'),
+            'status': job_state.get('status', 'idle'),
+            'elapsed': round(elapsed, 1),
+            'output': '\n'.join(job_state.get('output', [])[-200:])
+        }
+
+def run_job_command(cmd):
+    with job_lock:
+        job_state['process'] = None
+    try:
+        p = subprocess.Popen(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             bufsize=1)
+        with job_lock:
+            job_state['process'] = p
+        lines = []
+        if p.stdout:
+            for line in p.stdout:
+                line = line.rstrip()
+                lines.append(line)
+                with job_lock:
+                    job_state['output'] = lines[-200:]
+        rc = p.wait()
+        return rc, '\n'.join(lines)
+    except Exception as e:
+        return 999, str(e)
+    finally:
+        with job_lock:
+            job_state['process'] = None
 
 
 def run(cmd, timeout=20):
@@ -124,6 +172,25 @@ def snapraid_content_paths():
     return paths
 
 
+def snapraid_config_summary():
+    summary={'data_disks':0,'parity_levels':0,'content_copies':0,'parity_paths':[]}
+    try:
+        for line in Path(SNAPRAID_CONFIG).read_text(errors='ignore').splitlines():
+            line=line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('data '):
+                summary['data_disks'] += 1
+            elif line.startswith('content '):
+                summary['content_copies'] += 1
+            elif re.match(r'^(?:[2-6]-)?parity\s+', line):
+                summary['parity_levels'] += 1
+                summary['parity_paths'].append(line.split(None,1)[1].strip())
+    except Exception:
+        pass
+    return summary
+
+
 def snapraid_last_sync():
     mtimes=[]
     for p in snapraid_content_paths():
@@ -157,7 +224,7 @@ def snapraid_summary():
     return {'status_rc':rc,'diff_rc':rc2,'status_ok':status_ok,'diff_ok':diff_ok,
             'status_raw':status,'diff_raw':diff,'changes':pending,
             'pending_total':pending_total,'protection':protection,'warnings':warning,
-            'last_sync':snapraid_last_sync()}
+            'last_sync':snapraid_last_sync(),'config':snapraid_config_summary()}
 
 
 def smart_for_disk(d):
@@ -318,23 +385,92 @@ def api_refresh():
     threading.Thread(target=collect,daemon=True).start()
     return jsonify({'ok':True})
 
+@app.route('/api/job')
+@auth_required
+def api_job():
+    return jsonify(public_job_state())
+
 @app.route('/api/action/<name>',methods=['POST'])
 @auth_required
 def action(name):
-    if not ENABLE_ACTIONS: return jsonify({'ok':False,'error':'Actions disabled'}),403
+    if not ENABLE_ACTIONS:
+        return jsonify({'ok':False,'error':'Actions disabled. Set ENABLE_ACTIONS=true.'}),403
+
     allowed={
-        'sync':['snapraid','-c',SNAPRAID_CONFIG,'sync'],
-        'scrub':['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','10'],
-        'diff':['snapraid','-c',SNAPRAID_CONFIG,'diff'],
-        'status':['snapraid','-c',SNAPRAID_CONFIG,'status'],
+        'status': ['snapraid','-c',SNAPRAID_CONFIG,'status'],
+        'diff': ['snapraid','-c',SNAPRAID_CONFIG,'diff'],
+        'sync': ['snapraid','-c',SNAPRAID_CONFIG,'sync'],
+        'scrub10': ['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','10'],
+        'scrub_full': ['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','100'],
     }
-    if name not in allowed: return jsonify({'ok':False,'error':'Unknown action'}),400
+    if name not in set(allowed) | {'check'}:
+        return jsonify({'ok':False,'error':'Unknown action'}),400
+
+    with job_lock:
+        if job_state['running']:
+            return jsonify({'ok':False,'error':f"SnapRAID {job_state['name']} is already running"}),409
+        job_state.update({
+            'running':True,'name':name,'started':time.time(),'finished':None,
+            'returncode':None,'status':'running','output':[],'process':None,
+            'cancel_requested':False
+        })
+
     def task():
-        start=time.time(); rc,out=run(allowed[name],timeout=86400)
-        log_event(name,'success' if rc==0 else 'failed',out,time.time()-start); collect()
+        start=time.time()
+        try:
+            if name == 'check':
+                rc1,out1=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'status'])
+                if rc1 == 0:
+                    rc2,out2=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'diff'])
+                else:
+                    rc2,out2=rc1,'Diff skipped because status failed.'
+                rc = rc1 if rc1 else rc2
+                out = '=== STATUS ===\n'+out1+'\n\n=== DIFF ===\n'+out2
+            else:
+                rc,out=run_job_command(allowed[name])
+
+            with job_lock:
+                cancelled=job_state.get('cancel_requested',False)
+                job_state['running']=False
+                job_state['finished']=time.time()
+                job_state['returncode']=rc
+                job_state['status']='cancelled' if cancelled else ('success' if rc==0 else 'failed')
+                if out:
+                    job_state['output']=out.splitlines()[-200:]
+            log_event(name,'cancelled' if cancelled else ('success' if rc==0 else 'failed'),
+                      out,time.time()-start)
+        except Exception as e:
+            with job_lock:
+                job_state['running']=False
+                job_state['finished']=time.time()
+                job_state['returncode']=999
+                job_state['status']='failed'
+                job_state['output']=[str(e)]
+            log_event(name,'failed',str(e),time.time()-start)
+        finally:
+            collect()
+
     threading.Thread(target=task,daemon=True).start()
     log_event(name,'started',f'{name} started from dashboard',0)
-    return jsonify({'ok':True,'message':f'{name} started'})
+    return jsonify({'ok':True,'message':f'SnapRAID {name} started'})
+
+@app.route('/api/action/cancel',methods=['POST'])
+@auth_required
+def cancel_action():
+    if not ENABLE_ACTIONS:
+        return jsonify({'ok':False,'error':'Actions disabled'}),403
+    with job_lock:
+        if not job_state.get('running'):
+            return jsonify({'ok':False,'error':'No SnapRAID job is running'}),409
+        p=job_state.get('process')
+        job_state['cancel_requested']=True
+        job_state['status']='cancelling'
+    try:
+        if p and p.poll() is None:
+            p.terminate()
+        return jsonify({'ok':True,'message':'Cancel requested'})
+    except Exception as e:
+        return jsonify({'ok':False,'error':str(e)}),500
 
 if __name__=='__main__':
     db()
