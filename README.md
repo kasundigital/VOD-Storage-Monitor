@@ -59,13 +59,22 @@ ghcr.io/kasundigital/vod-storage-monitor:latest
 
 ## Update
 
+Update to the latest release with one command:
+
 ```bash
-cd /docker/vod-monitor
-curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/docker-compose.yml -o docker-compose.yml
-docker compose pull
-docker compose up -d
-docker image prune -f
+curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/update.sh | bash
 ```
+
+The updater will:
+
+- Remove the existing `vod-monitor` container
+- Remove the old `latest` image
+- Download the latest `docker-compose.yml`
+- Pull the newest GHCR image
+- Recreate and start the container
+- Print the installed version and build SHA
+
+Your existing `.env` and `./data` are preserved.
 
 ## SnapRAID actions
 
