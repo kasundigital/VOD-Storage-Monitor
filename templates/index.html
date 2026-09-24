@@ -62,6 +62,49 @@
 
 {% if data.docker.enabled %}<section class="panel"><div class="panel-title"><h2>Docker Containers</h2></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Image</th><th>Status</th><th>Ports</th></tr></thead><tbody>{% for c in data.docker.containers %}<tr><td>{{c.Names}}</td><td>{{c.Image}}</td><td>{{c.Status}}</td><td>{{c.Ports}}</td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
 
+<section class="panel">
+  <div class="panel-title">
+    <div><h2>Automatic Schedule</h2><span class="subtle">Choose the customer's timezone and preferred maintenance time.</span></div>
+    <span id="scheduleState" class="pill warn">Loading</span>
+  </div>
+  <div class="schedule-wrap">
+    <div class="schedule-grid">
+      <label class="field toggle-field"><span>Automatic Sync</span><input id="syncEnabled" type="checkbox"></label>
+      <label class="field"><span>Daily Sync Time</span><input id="syncTime" type="time" value="04:00"></label>
+      <label class="field"><span>Timezone</span>
+        <select id="scheduleTimezone">
+          <option value="UTC">UTC</option>
+          <option value="America/New_York">America/New_York</option>
+          <option value="America/Chicago">America/Chicago</option>
+          <option value="America/Denver">America/Denver</option>
+          <option value="America/Los_Angeles">America/Los_Angeles</option>
+          <option value="America/Phoenix">America/Phoenix</option>
+          <option value="America/Anchorage">America/Anchorage</option>
+          <option value="Pacific/Honolulu">Pacific/Honolulu</option>
+          <option value="Asia/Colombo">Asia/Colombo</option>
+        </select>
+      </label>
+      <label class="field toggle-field"><span>Weekly 10% Scrub</span><input id="scrubEnabled" type="checkbox"></label>
+      <label class="field"><span>Scrub Day</span>
+        <select id="scrubDay">
+          <option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option>
+          <option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option>
+          <option value="6">Sunday</option>
+        </select>
+      </label>
+      <label class="field"><span>Scrub Time</span><input id="scrubTime" type="time" value="05:00"></label>
+    </div>
+    <div class="schedule-footer">
+      <div class="schedule-times">
+        <span>Selected timezone now: <b id="scheduleCurrent">-</b></span>
+        <span>Server time: <b id="scheduleServer">-</b></span>
+      </div>
+      <button class="primary" onclick="saveSchedule()">Save Schedule</button>
+    </div>
+    <div id="scheduleMessage" class="muted"></div>
+  </div>
+</section>
+
 <section class="panel"><div class="panel-title"><h2>Maintenance History</h2></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Status</th><th>Duration</th></tr></thead><tbody>{% for e in events %}<tr><td>{{e[0]}}</td><td>{{e[1]}}</td><td>{{e[2]}}</td><td>{{'%.1f'|format(e[4])}}s</td></tr>{% endfor %}</tbody></table></div></section>
 <footer style="padding:18px;text-align:center" class="muted">VOD Storage Monitor v{{data.app_version}} · build {{data.build_sha}}</footer>
 </main>
@@ -153,5 +196,44 @@ setInterval(refreshStatus,10000);
 refreshStatus();
 setInterval(pollJob,2000);
 pollJob();
+
+async function loadSchedule(){
+  try{
+    const r=await fetch('/api/schedule');
+    const s=await r.json();
+    document.getElementById('syncEnabled').checked=!!s.sync_enabled;
+    document.getElementById('syncTime').value=s.sync_time||'04:00';
+    document.getElementById('scheduleTimezone').value=s.timezone||'UTC';
+    document.getElementById('scrubEnabled').checked=!!s.scrub_enabled;
+    document.getElementById('scrubDay').value=String(s.scrub_day ?? '6');
+    document.getElementById('scrubTime').value=s.scrub_time||'05:00';
+    document.getElementById('scheduleCurrent').textContent=s.current_time||'-';
+    document.getElementById('scheduleServer').textContent=s.server_time||'-';
+    const active=!!s.sync_enabled || !!s.scrub_enabled;
+    const state=document.getElementById('scheduleState');
+    state.textContent=active?'Enabled':'Disabled';
+    state.className='pill '+(active?'ok':'warn');
+  }catch(e){
+    document.getElementById('scheduleMessage').textContent='Unable to load schedule.';
+  }
+}
+async function saveSchedule(){
+  const payload={
+    sync_enabled:document.getElementById('syncEnabled').checked,
+    sync_time:document.getElementById('syncTime').value,
+    timezone:document.getElementById('scheduleTimezone').value,
+    scrub_enabled:document.getElementById('scrubEnabled').checked,
+    scrub_day:document.getElementById('scrubDay').value,
+    scrub_time:document.getElementById('scrubTime').value
+  };
+  const r=await fetch('/api/schedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const j=await r.json();
+  const msg=document.getElementById('scheduleMessage');
+  if(!r.ok){msg.textContent=j.error||'Unable to save schedule.';return;}
+  msg.textContent='Schedule saved.';
+  await loadSchedule();
+}
+loadSchedule();
+setInterval(loadSchedule,60000);
 </script>
 </body></html>
