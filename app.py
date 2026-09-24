@@ -114,13 +114,25 @@ def snapraid_last_sync():
 def snapraid_summary():
     rc,status=run(['snapraid','-c',SNAPRAID_CONFIG,'status'],timeout=60)
     rc2,diff=run(['snapraid','-c',SNAPRAID_CONFIG,'diff'],timeout=120)
+    status_ok = (rc == 0 and bool(status.strip()))
+    diff_ok = (rc2 == 0 and bool(diff.strip()))
     pending={}
     for key in ['equal','added','removed','updated','moved','copied','restored']:
         m=re.search(rf'^\s*([0-9]+)\s+{key}\s*$', diff, re.M)
         pending[key]=int(m.group(1)) if m else 0
     warning=[x.strip() for x in (status+'\n'+diff).splitlines() if 'WARNING!' in x]
-    return {'status_rc':rc,'diff_rc':rc2,'status_raw':status,'diff_raw':diff,'changes':pending,
-            'pending_total':sum(v for k,v in pending.items() if k!='equal'), 'warnings':warning,
+    pending_total=sum(v for k,v in pending.items() if k!='equal')
+    if not status_ok:
+        protection='Unavailable'
+    elif not diff_ok:
+        protection='Status OK / Diff unavailable'
+    elif pending_total == 0:
+        protection='Protected'
+    else:
+        protection='Changes Pending'
+    return {'status_rc':rc,'diff_rc':rc2,'status_ok':status_ok,'diff_ok':diff_ok,
+            'status_raw':status,'diff_raw':diff,'changes':pending,
+            'pending_total':pending_total,'protection':protection,'warnings':warning,
             'last_sync':snapraid_last_sync()}
 
 
@@ -134,23 +146,32 @@ def list_disks():
         if d.get('type')!='disk': continue
         name=d['name']; dev='/dev/'+name
         smart={'health':'Unknown','temp':None,'power_hours':None,'reallocated':None,'pending':None,'error':None}
-        rc2,sout=run(['smartctl','-a','-j',dev],timeout=15)
+        rc2,sout=run(['smartctl','-x','-j',dev],timeout=20)
+        smart_serial=''
         try:
             j=json.loads(sout)
             passed=j.get('smart_status',{}).get('passed')
             if passed is True: smart['health']='Healthy'
             elif passed is False: smart['health']='FAILED'
+            elif j.get('smart_support',{}).get('available') is False:
+                smart['health']='Unsupported'
+            elif j.get('device',{}):
+                smart['health']='Available'
             t=j.get('temperature',{}).get('current')
             smart['temp']=t
             smart['power_hours']=j.get('power_on_time',{}).get('hours')
+            smart_serial=(j.get('serial_number') or '').strip()
             attrs=j.get('ata_smart_attributes',{}).get('table',[])
             amap={a.get('name'):a.get('raw',{}).get('value') for a in attrs}
             smart['reallocated']=amap.get('Reallocated_Sector_Ct')
             smart['pending']=amap.get('Current_Pending_Sector')
+            msgs=j.get('smartctl',{}).get('messages',[])
+            if msgs:
+                smart['error']='; '.join(str(m.get('string','')) for m in msgs if m.get('string'))[-500:] or None
         except Exception:
-            smart['error']=sout[-300:] if rc2 else None
+            smart['error']=sout[-500:] if sout else f'smartctl exit code {rc2}'
         disks.append({'name':name,'dev':dev,'size':int(d.get('size') or 0),'size_h':human_bytes(d.get('size') or 0),
-                      'model':(d.get('model') or '').strip(),'serial':(d.get('serial') or '').strip(),'smart':smart})
+                      'model':(d.get('model') or '').strip(),'serial':((d.get('serial') or '').strip() or smart_serial),'smart':smart})
     return disks
 
 
@@ -177,7 +198,7 @@ def collect():
             'snapraid': snapraid_summary(),
             'disks': list_disks(),
             'docker': docker_status(),
-            'hostname': os.uname().nodename,
+            'hostname': (Path('/host/etc/hostname').read_text().strip() if Path('/host/etc/hostname').exists() else os.uname().nodename),
         }
         data['disk_health']={
             'total':len(data['disks']),
