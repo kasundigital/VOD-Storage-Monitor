@@ -4,7 +4,7 @@
 <section class="grid hero">
 <div class="card"><span>VOD Pool</span><strong>{{data.storage.vod.size_h}}</strong><small>{{data.storage.vod.used_h}} used · {{data.storage.vod.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.vod.pct}}%"></i></div><b>{{data.storage.vod.pct}}%</b></div>
 <div class="card"><span>Docker RAID</span><strong>{{data.storage.docker.size_h}}</strong><small>{{data.storage.docker.used_h}} used · {{data.storage.docker.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.docker.pct}}%"></i></div><b>{{data.storage.docker.pct}}%</b></div>
-<div class="card"><span>SnapRAID</span><strong>{{data.snapraid.protection}}</strong><small>Last sync: {{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</small><b>{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total}} pending change(s){% else %}Diff unavailable{% endif %}</b></div>
+<div class="card"><span>SnapRAID</span><strong id="snapHeroProtection">{{data.snapraid.protection}}</strong><small>Last sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small><b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total}} pending change(s){% else %}Diff unavailable{% endif %}</b></div>
 <div class="card"><span>Disk Health</span><strong>{{data.disk_health.healthy}} / {{data.disk_health.total}}</strong><small>{{data.disk_health.warning}} warning · {{data.disk_health.failed}} failed</small><b>Max temp: {{data.disk_health.max_temp if data.disk_health.max_temp is not none else '-'}}°C</b></div>
 </section>
 
@@ -12,7 +12,7 @@
 <div class="panel snap-panel">
   <div class="panel-title">
     <div><h2>SnapRAID</h2><span class="subtle">{{data.snapraid.config.data_disks}} data · {{data.snapraid.config.parity_levels}} parity · {{data.snapraid.config.content_copies}} content copies</span></div>
-    <span class="pill {{'ok' if data.snapraid.protection=='Protected' else ('warn' if data.snapraid.protection=='Changes Pending' else 'bad')}}">{{data.snapraid.protection}}</span>
+    <span id="snapProtectionPill" class="pill {{'ok' if data.snapraid.protection=='Protected' else ('warn' if data.snapraid.protection in ['Changes Pending','Syncing','Scrubbing'] else 'bad')}}">{{data.snapraid.protection}}</span>
   </div>
 
   <div class="kv">
@@ -54,8 +54,8 @@
   {% if data.snapraid.diff_ok is sameas false %}<div class="warning">SnapRAID diff command failed (exit {{data.snapraid.diff_rc}}).</div>{% endif %}
   {% if data.snapraid.warnings %}<div class="warning">{{data.snapraid.warnings|join(' · ')}}</div>{% endif %}
   <details><summary>Parity paths</summary><pre>{{data.snapraid.config.parity_paths|join('\n') if data.snapraid.config.parity_paths else 'No parity paths detected'}}</pre></details>
-  <details><summary>Raw status</summary><pre>{{data.snapraid.status_raw or 'No output returned'}}</pre></details>
-  <details><summary>Raw diff</summary><pre>{{data.snapraid.diff_raw or 'No output returned'}}</pre></details>
+  <details><summary>Raw status</summary><pre id="snapRawStatus">{{data.snapraid.status_raw or 'No output returned'}}</pre></details>
+  <details><summary>Raw diff</summary><pre id="snapRawDiff">{{data.snapraid.diff_raw or 'No output returned'}}</pre></details>
 </div></section>
 
 <section class="panel"><div class="panel-title"><h2>Physical Disks</h2><span>{{data.disks|length}} detected</span></div><div class="table-wrap"><table><thead><tr><th>Device</th><th>Model</th><th>Serial</th><th>Size</th><th>SMART</th><th>Temp</th><th>Power Hours</th><th>Defects/Pending</th><th>Details</th></tr></thead><tbody>{% for d in data.disks %}<tr><td><b>{{d.name}}</b></td><td>{{d.model}}</td><td class="mono">{{d.serial}}</td><td>{{d.size_h}}</td><td><span class="pill {{'ok' if d.smart.health=='Healthy' else ('bad' if d.smart.health=='FAILED' else 'warn')}}">{{d.smart.health}}</span></td><td class="{{'hot' if d.smart.temp and d.smart.temp >= 50 else ''}}">{{d.smart.temp if d.smart.temp is not none else '-'}}°C</td><td>{{d.smart.power_hours if d.smart.power_hours is not none else '-'}}</td><td>{{d.smart.pending if d.smart.pending is not none else (d.smart.reallocated if d.smart.reallocated is not none else '-')}}</td><td class="mono">{{d.smart.error if d.smart.error else '-'}}</td></tr>{% endfor %}</tbody></table></div></section>
@@ -125,7 +125,27 @@ async function refreshStatus(){
       set('snapPending', s.maintenance_running ? 'Updating' : (s.pending_total ?? 0));
       set('snapStatus', s.status_ok ? 'OK' : 'Failed');
       set('snapDiff', s.maintenance_running ? ('Paused during '+(s.job?.name||'maintenance')) : (s.diff_ok ? 'OK' : 'Failed'));
-      set('snapLastSync', s.last_sync?.display || 'Unknown');
+      const lastSync=s.last_sync?.display || 'Unknown';
+      set('snapLastSync', lastSync);
+      set('snapHeroLastSync', lastSync);
+      set('snapHeroProtection', s.protection || 'Unknown');
+
+      const heroPending = s.maintenance_running
+        ? (s.job?.progress ? (s.job.progress.percent+'% · '+s.job.progress.processed+' processed') : 'Maintenance job running')
+        : (s.diff_ok ? ((s.pending_total ?? 0)+' pending change(s)') : 'Diff unavailable');
+      set('snapHeroPending', heroPending);
+
+      const pill=document.getElementById('snapProtectionPill');
+      if(pill){
+        pill.textContent=s.protection||'Unknown';
+        pill.classList.remove('ok','warn','bad');
+        if(s.protection==='Protected') pill.classList.add('ok');
+        else if(['Changes Pending','Syncing','Scrubbing'].includes(s.protection)) pill.classList.add('warn');
+        else pill.classList.add('bad');
+      }
+
+      set('snapRawStatus', s.status_raw || 'No output returned');
+      set('snapRawDiff', s.diff_raw || 'No output returned');
     }
   }catch(e){}
 }
