@@ -160,7 +160,7 @@ def get_schedule():
         cfg['timezone'] = 'UTC'
         now_local = datetime.now(timezone.utc)
         cfg['current_time'] = now_local.strftime('%Y-%m-%d %H:%M:%S UTC')
-    cfg['server_time'] = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
+    cfg['server_time'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     return cfg
 
 def save_schedule(cfg):
