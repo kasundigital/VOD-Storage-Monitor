@@ -688,7 +688,11 @@ def schedule_api():
         return jsonify({'ok':False,'error':'Invalid timezone'}),400
 
     def valid_time(value):
-        return bool(re.match(r'^(?:[01]\d|2[0-3]):[0-5]\d
+        try:
+            datetime.strptime(str(value or ''), '%H:%M')
+            return True
+        except (TypeError, ValueError):
+            return False
 
     sync_time = str(payload.get('sync_time','04:00'))
     scrub_time = str(payload.get('scrub_time','05:00'))
