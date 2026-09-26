@@ -44,3 +44,12 @@
 .disk-bar{height:7px;margin:0 0 5px}
 .disk-table small{display:block;color:var(--muted);font-size:11px}
 @media(max-width:700px){.disk-table .usage-cell{min-width:180px}}
+
+
+/* Initial data loading overlay */
+.init-overlay{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg)}
+.init-card{width:min(420px,100%);padding:30px 26px;text-align:center;border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:0 20px 60px rgba(0,0,0,.28)}
+.init-spinner{width:42px;height:42px;margin:0 auto 18px;border:4px solid rgba(255,255,255,.10);border-top-color:var(--accent);border-radius:50%;animation:init-spin .8s linear infinite}
+.init-title{font-size:18px;font-weight:800;color:var(--text);margin-bottom:8px}
+.init-text{font-size:12px;line-height:1.55;color:var(--muted)}
+@keyframes init-spin{to{transform:rotate(360deg)}}
