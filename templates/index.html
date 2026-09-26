@@ -82,8 +82,8 @@
                   <span class="muted">Not mounted</span>
                 {% endif %}
               </td>
-              <td><span class="pill {{'ok' if d.smart.health=='Healthy' else ('bad' if d.smart.health=='FAILED' else 'warn')}}">{{d.smart.health}}</span></td>
-              <td class="{{'hot' if d.smart.temp and d.smart.temp >= 50 else ''}}">{{d.smart.temp if d.smart.temp is not none else '-'}}°C</td>
+              <td><span class="pill {{'ok' if d.smart.health=='Healthy' else ('bad' if d.smart.health in ['FAILED','Critical'] else 'warn')}}" {% if d.smart.health_detail %}title="{{d.smart.health_detail}}"{% endif %}>{{d.smart.health}}</span></td>
+              <td class="{{'hot' if d.smart.health=='Temp Warning' else ''}}">{{d.smart.temp if d.smart.temp is not none else '-'}}°C</td>
               <td>{{d.smart.pending if d.smart.pending is not none else (d.smart.reallocated if d.smart.reallocated is not none else '-')}}</td>
             </tr>
           {% endfor %}
