@@ -14,7 +14,7 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.4.1')
+APP_VERSION = os.getenv('APP_VERSION', '0.4.2')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -419,7 +419,7 @@ def snapraid_summary():
 
 def smart_for_disk(d):
     name=d['name']; dev='/dev/'+name
-    smart={'health':'Unknown','temp':None,'power_hours':None,'reallocated':None,'pending':None,'error':None}
+    smart={'health':'Unknown','health_detail':None,'temp':None,'power_hours':None,'reallocated':None,'pending':None,'error':None}
     rc2,sout=run(['smartctl','-x','-j',dev],timeout=25)
     smart_serial=''
     j=None
@@ -446,12 +446,47 @@ def smart_for_disk(d):
         nvme_health=j.get('nvme_smart_health_information_log',{})
         nvme_critical=nvme_health.get('critical_warning')
 
-        if passed is True:
+        if protocol == 'NVME':
+            # NVMe critical_warning is a bitmask. smartctl may report
+            # smart_status.passed=false for a temperature-only warning, which
+            # does not mean the drive has failed.
+            try:
+                nvme_critical = int(nvme_critical or 0)
+            except (TypeError, ValueError):
+                nvme_critical = 0
+
+            media_errors = int(nvme_health.get('media_errors') or 0)
+            reasons = []
+            if nvme_critical & 0x01:
+                reasons.append('Available spare below threshold')
+            if nvme_critical & 0x02:
+                reasons.append('Temperature above/below warning threshold')
+            if nvme_critical & 0x04:
+                reasons.append('NVM subsystem reliability degraded')
+            if nvme_critical & 0x08:
+                reasons.append('Media placed in read-only mode')
+            if nvme_critical & 0x10:
+                reasons.append('Volatile memory backup failed')
+            if nvme_critical & 0x20:
+                reasons.append('Persistent memory read-only/unreliable')
+
+            if nvme_critical == 0 and media_errors == 0:
+                smart['health'] = 'Healthy'
+            elif nvme_critical == 0x02 and media_errors == 0:
+                smart['health'] = 'Temp Warning'
+            elif nvme_critical:
+                smart['health'] = 'Critical' if (nvme_critical & (0x04 | 0x08 | 0x10 | 0x20)) else 'Warning'
+            elif media_errors > 0:
+                smart['health'] = 'Warning'
+
+            if reasons:
+                smart['health_detail'] = '; '.join(reasons)
+            elif media_errors > 0:
+                smart['health_detail'] = f'{media_errors} media/data integrity error(s)'
+        elif passed is True:
             smart['health']='Healthy'
         elif passed is False:
             smart['health']='FAILED'
-        elif protocol == 'NVME' and nvme_critical == 0:
-            smart['health']='Healthy'
         elif j.get('smart_support',{}).get('available') is False:
             smart['health']='Unsupported'
         elif j.get('device',{}):
