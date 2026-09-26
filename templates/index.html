@@ -1,4 +1,13 @@
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VOD Storage Monitor</title><link rel="stylesheet" href="/static/app.css"></head><body>
+{% if updated == 'initializing' %}
+<div id="initializingOverlay" class="init-overlay">
+  <div class="init-card">
+    <div class="init-spinner" aria-hidden="true"></div>
+    <div class="init-title">Initializing VOD Storage Monitor</div>
+    <div class="init-text">Collecting storage, RAID, SnapRAID and disk health information...</div>
+  </div>
+</div>
+{% endif %}
 <header><div><div class="brand">VOD STORAGE MONITOR</div><div class="muted">{{data.hostname}} · v{{data.app_version}} · build {{data.build_sha}} · updated <span id="updated">{{updated}}</span></div></div><div class="header-actions"><button onclick="refreshNow()">Refresh</button><a class="button ghost" href="/logout">Logout</a></div></header>
 <main>
 <section class="grid hero">
@@ -144,6 +153,22 @@
 <footer style="padding:18px;text-align:center" class="muted">VOD Storage Monitor v{{data.app_version}} · build {{data.build_sha}}</footer>
 </main>
 <script>
+{% if updated == 'initializing' %}
+async function waitForInitialData(){
+  try{
+    const r=await fetch('/api/status',{cache:'no-store'});
+    if(r.ok){
+      const j=await r.json();
+      if(j.updated){
+        location.reload();
+        return;
+      }
+    }
+  }catch(e){}
+  setTimeout(waitForInitialData,1500);
+}
+waitForInitialData();
+{% endif %}
 async function refreshNow(){
   await fetch('/api/refresh',{method:'POST'});
   setTimeout(()=>location.reload(),1500);
