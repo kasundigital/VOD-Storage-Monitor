@@ -14,7 +14,7 @@ ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.4.2')
+APP_VERSION = os.getenv('APP_VERSION', '0.4.3')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -646,8 +646,8 @@ def collect(force=False):
         data['disk_health']={
             'total':len(data['disks']),
             'healthy':sum(1 for d in data['disks'] if d['smart']['health']=='Healthy'),
-            'failed':sum(1 for d in data['disks'] if d['smart']['health']=='FAILED'),
-            'warning':sum(1 for d in data['disks'] if (d['smart']['temp'] or 0)>=50 or (d['smart']['pending'] or 0)>0),
+            'failed':sum(1 for d in data['disks'] if d['smart']['health'] in ('FAILED','Critical')),
+            'warning':sum(1 for d in data['disks'] if d['smart']['health'] in ('Warning','Temp Warning')),
             'max_temp':max([d['smart']['temp'] for d in data['disks'] if d['smart']['temp'] is not None] or [None])
         }
         cache['data']=data; cache['updated']=datetime.now().astimezone().isoformat()
