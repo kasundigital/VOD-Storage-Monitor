@@ -10,19 +10,19 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - REFRESH_SECONDS=${REFRESH_SECONDS:-60}
       - SNAPRAID_CONFIG=${SNAPRAID_CONFIG:-/etc/snapraid.conf}
-      - ENABLE_ACTIONS=${ENABLE_ACTIONS:-false}
+      - SNAPRAID_LOG_PATH=${SNAPRAID_LOG_PATH:-/docker/snapraid-recovery-backup/resync-final.log}
       - ENABLE_DOCKER_MONITOR=${ENABLE_DOCKER_MONITOR:-false}
     ports:
       - "8099:8099"
     volumes:
       - ./data:/data
       - /etc/snapraid.conf:/etc/snapraid.conf:ro
-      - /var/lib/snapraid:/var/lib/snapraid:rw
+      - /var/lib/snapraid:/var/lib/snapraid:ro
       - /etc/hostname:/host/etc/hostname:ro
       - /run/udev:/run/udev:ro
       - /proc:/host/proc:ro
-      - /mnt:/mnt:rw
+      - /mnt:/mnt:ro
       - /docker:/docker:ro
-      - /dev:/dev:rw
+      - /dev:/dev:ro
     privileged: true
     restart: unless-stopped
