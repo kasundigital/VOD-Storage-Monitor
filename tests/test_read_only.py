@@ -76,7 +76,7 @@ class ReadOnlyTests(unittest.TestCase):
             'running': False, 'name': None, 'progress': None,
             'processes': [],
             'log': {'path': '/tmp/sync.log', 'updated': None,
-                    'text': 'summary:error_io:0\\nsummary:exit:ok\\n', 'error': None}
+                    'text': 'summary:error_io:0\nsummary:exit:ok\n', 'error': None}
         }
         with patch.object(monitor, 'snapraid_observation', return_value=observation), \
              patch.object(monitor, 'run', side_effect=AssertionError('no commands allowed')), \
@@ -99,9 +99,9 @@ class ReadOnlyTests(unittest.TestCase):
                 json.dump({
                     'schema': 1, 'captured_at': '2026-10-11T12:00:00+00:00',
                     'status_rc': 0, 'diff_rc': 0,
-                    'status': 'No error detected.\\n96% of the array is not scrubbed.\\n',
-                    'diff': ' 300 equal\\n 0 added\\n 0 removed\\n 0 updated\\n'
-                            ' 0 moved\\n 0 copied\\n 0 restored\\n',
+                    'status': 'No error detected.\n96% of the array is not scrubbed.\n',
+                    'diff': ' 300 equal\n 0 added\n 0 removed\n 0 updated\n'
+                            ' 0 moved\n 0 copied\n 0 restored\n',
                 }, stream)
             observation = {
                 'running': False, 'name': None, 'progress': None, 'processes': [],
