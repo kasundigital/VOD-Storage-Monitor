@@ -10,6 +10,7 @@ DB_PATH = Path(os.getenv('DB_PATH', '/data/vodmon.db'))
 SNAPRAID_CONFIG = os.getenv('SNAPRAID_CONFIG', '/etc/snapraid.conf')
 SNAPRAID_LOG_PATH = os.getenv('SNAPRAID_LOG_PATH', '/docker/snapraid-recovery-backup/resync-final.log')
 SNAPRAID_SNAPSHOT_PATH = os.getenv('SNAPRAID_SNAPSHOT_PATH', '/docker/vod-monitor/data/snapraid-snapshot.json')
+SNAPRAID_SCRUB_LOG_PATH = os.getenv('SNAPRAID_SCRUB_LOG_PATH', '')
 REFRESH_SECONDS = int(os.getenv('REFRESH_SECONDS', '60'))
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
@@ -79,8 +80,8 @@ def snapraid_processes():
     return sorted(processes, key=lambda p: p['pid'])
 
 
-def read_snapraid_log():
-    path = SNAPRAID_LOG_PATH
+def read_snapraid_log(path=None):
+    path = SNAPRAID_LOG_PATH if path is None else path
     if not path:
         return {'path': '', 'updated': None, 'text': '',
                 'error': 'Set SNAPRAID_LOG_PATH to an existing, mounted log file.'}
@@ -102,7 +103,8 @@ def read_snapraid_log():
 
 def snapraid_observation():
     processes = snapraid_processes()
-    log = read_snapraid_log()
+    log_path = (SNAPRAID_SCRUB_LOG_PATH if processes and processes[0]['name'] == 'scrub' and SNAPRAID_SCRUB_LOG_PATH else SNAPRAID_LOG_PATH)
+    log = read_snapraid_log(log_path)
     progress = None
     # SnapRAID's -l structured logs may have no percentage; do not invent one.
     for line in reversed(log['text'].splitlines()):
@@ -293,7 +295,7 @@ def snapraid_summary():
         line.strip() for line in status.splitlines()
         if 'WARNING!' in line
     ))
-    if config['data_disks'] >= 30 and config['parity_levels'] < 5:
+    if config.get('data_disks', 0) >= 30 and config.get('parity_levels', 0) < 5:
         recommendation = 'WARNING! For 30 data disks, SnapRAID recommends five parity levels.'
         if not any('five parity levels' in w for w in warnings):
             warnings.append(recommendation)
