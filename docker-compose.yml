@@ -11,6 +11,8 @@ services:
       - REFRESH_SECONDS=${REFRESH_SECONDS:-60}
       - SNAPRAID_CONFIG=${SNAPRAID_CONFIG:-/etc/snapraid.conf}
       - SNAPRAID_LOG_PATH=${SNAPRAID_LOG_PATH:-/docker/snapraid-recovery-backup/resync-final.log}
+      - SNAPRAID_SCRUB_LOG_PATH=${SNAPRAID_SCRUB_LOG_PATH:-}
+      - SNAPRAID_SNAPSHOT_PATH=${SNAPRAID_SNAPSHOT_PATH:-/docker/vod-monitor/data/snapraid-snapshot.json}
       - ENABLE_DOCKER_MONITOR=${ENABLE_DOCKER_MONITOR:-false}
     ports:
       - "8099:8099"
