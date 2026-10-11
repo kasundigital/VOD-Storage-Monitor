@@ -1,0 +1,32 @@
+name: Read-only monitoring checks
+
+on:
+  pull_request:
+  push:
+    branches: [feature/read-only-monitoring]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python requirements
+        run: python -m pip install -r requirements.txt
+      - name: Python syntax
+        run: python -m compileall -q app.py tests
+      - name: API regression tests
+        run: python -m unittest discover -s tests -v
+      - name: Dashboard JavaScript syntax
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          html = Path('templates/index.html').read_text()
+          script = html.split('<script>', 1)[1].split('</script>', 1)[0]
+          script = re.sub(r'\{%.*?%\}', '', script, flags=re.S)
+          Path('/tmp/vod-monitor-dashboard.js').write_text(script)
+          PY
+          node --check /tmp/vod-monitor-dashboard.js
