@@ -1,139 +1,76 @@
-# VOD Storage Monitor
+# VOD Storage Monitor — Read-only dashboard
 
-Purpose-built dashboard for a mergerFS + SnapRAID + mdadm VOD server.
+A monitoring-only dashboard for Linux VOD servers using mergerFS, SnapRAID, and mdadm.
 
-## Features
+**The dashboard cannot start, schedule, cancel, or control a SnapRAID operation.** All SnapRAID work must be managed externally via SSH, cron, or systemd. Existing scheduled settings from older versions are ignored (the scheduler is removed).
 
-- `/mnt/vod` total / used / free space and utilization
-- `/docker` NVMe RAID storage usage
-- mdadm arrays and resync/recovery progress
-- SnapRAID status, last sync estimate, warnings, and pending diff counts
-- SMART health, temperature, power-on hours, pending/reallocated sectors
-- Maintenance history stored in SQLite
-- SnapRAID Check Now, Status, Diff, Sync, 10% Scrub, Full Scrub, live job output, cancel control, and maintenance history
-- Optional Docker container list
-- Responsive desktop/mobile dashboard
-- Password login
+## What you can view
 
-## Quick install
+- `/mnt/vod` total, used, free capacity and utilization
+- `/docker` storage statistics
+- mdadm RAID health and progress
+- SnapRAID status/diff summaries and last sync content-file timestamp
+- Active **host** SnapRAID process (for example, a sync started via SSH or systemd)
+- Tail of an existing SnapRAID log with automatic refresh
+- SMART disk health, temperatures, runtime, pending/reallocated sectors
+- Existing historical maintenance records stored in the local SQLite database
+- Optional Docker container listing
+- Responsive dashboard and password login
 
-Create the app folder and Compose file:
+The app performs read-only inspection commands such as `df`, `lsblk`, `smartctl -x`, `snapraid status`, and `snapraid diff` when no host SnapRAID process is active. These are not maintenance operations. While a host SnapRAID command owns the content lock, the dashboard pauses its own status/diff queries, shows the active process and available log output, and marks those readings as paused, **not failed**.
+
+## Install
 
 ```bash
 mkdir -p /docker/vod-monitor/data
 cd /docker/vod-monitor
-
 curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/docker-compose.yml -o docker-compose.yml
-```
-
-Edit your password and secret:
-
-```bash
-nano docker-compose.yml
-```
-
-Generate a strong secret if needed:
-
-```bash
-openssl rand -hex 32
-```
-
-Pull and start the prebuilt image:
-
-```bash
+curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/.env.example -o .env
+nano .env
 docker compose pull
 docker compose up -d
 ```
 
-Open:
+Set strong `ADMIN_PASSWORD` and `SECRET_KEY`. Generate a secret with `openssl rand -hex 32`.
 
-```text
-http://SERVER-IP:8099
+Open `http://SERVER-IP:8099`.
+
+Container image: `ghcr.io/kasundigital/vod-storage-monitor:latest`.
+
+## Existing SnapRAID log
+
+The monitor **does not start SnapRAID to produce a log**. It reads the existing file specified by `SNAPRAID_LOG_PATH`. Default:
+
+```env
+SNAPRAID_LOG_PATH=/docker/snapraid-recovery-backup/resync-final.log
 ```
 
-Docker image:
+This should be the path *inside the container*, backed by the read-only `/docker:/docker:ro` host mount. Point it to the actual existing log file on your system. If your log is outside `/docker`, add an additional **read-only** bind mount to the Compose file and use its in-container path. The log viewer shows the latest 220 lines (up to ~96 KiB), not the whole file, and refreshes every 5 seconds.
 
-```text
-ghcr.io/kasundigital/vod-storage-monitor:latest
-```
+For the server `den-sm5049p-1`, the active external recovery command previously used `/docker/snapraid-recovery-backup/resync-final.log`.
 
-## Update
+To see an active SnapRAID process that runs on the host, `/proc:/host/proc:ro` is mounted. The dashboard displays the operation and PID but has no way to send signals or start jobs. **Percentage progress only appears if the external log actually contains percentage lines; no progress estimate is fabricated.**
 
-Update to the latest release with one command:
+## Read-only operation and permissions
+
+- No Sync, Scrub, Check, Cancel, or schedule buttons
+- No write-action or schedule API routes
+- No background scheduler; old persisted schedules cannot execute
+- Data, content, and device host mounts are specified read-only (`/docker`, `/mnt`, `/var/lib/snapraid`, `/dev`); the application keeps its own SQLite database in `./data:/data`
+- The browser can view process and log output, disk SMART, storage utilization, and existing maintenance history
+
+**Important:** `privileged: true` remains in the example Compose deployment for compatibility with low-level SMART access across many HDDs. This privilege means the *container itself is not a strong OS-level security boundary*, even though the application exposes no maintenance commands and bind mounts are set `:ro`. Deploy only on trusted networks and keep login credentials private. A future hardened deployment should use only the exact device/capability permissions required by the target host.
+
+SnapRAID `status` and `diff` may be unavailable on some read-only filesystem/locking configurations; when they are, the dashboard continues showing disks, process and logs instead of changing any data.
+
+Optional Docker listing requires `ENABLE_DOCKER_MONITOR=true` and a manually added `/var/run/docker.sock` mount. Docker socket access is highly privileged even when mounted read-only and is **not** enabled by default.
+
+## Updating
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/update.sh | bash
 ```
 
-The updater will:
+The updater recreates only the *monitor* container. Existing `.env` and `./data` are preserved. Host SnapRAID syncs launched outside the dashboard remain independent of the monitor.
 
-- Remove the existing `vod-monitor` container
-- Remove the old `latest` image
-- Download the latest `docker-compose.yml`
-- Pull the newest GHCR image
-- Recreate and start the container
-- Print the installed version and build SHA
-
-Your existing `.env` and `./data` are preserved.
-
-## SnapRAID actions
-
-Monitoring is read-only by default.
-
-To enable the authenticated SnapRAID maintenance controls, set:
-
-```env
-ENABLE_ACTIONS=true
-```
-
-The supplied Compose file mounts `/mnt` read/write so Sync and Scrub can update parity when actions are enabled. Keep `ENABLE_ACTIONS=false` if you only want monitoring.
-
-Available controls:
-
-- **Check Now** — runs SnapRAID status then diff
-- **Status** — current SnapRAID array status
-- **Diff** — pending added/updated/removed/moved files
-- **Start Sync** — updates parity for pending changes
-- **Scrub 10%** — routine partial scrub
-- **Full Scrub** — verifies the entire protected set
-- **Cancel Job** — requests termination of the currently running dashboard job
-- Live output, elapsed time, result state, and SQLite maintenance history
-
-Only enable actions on a trusted/private network and use a strong administrator password.
-
-## Docker monitoring
-
-Optional. To show containers, set:
-
-```yaml
-ENABLE_DOCKER_MONITOR=true
-```
-
-and add:
-
-```yaml
-- /var/run/docker.sock:/var/run/docker.sock
-```
-
-Access to the Docker socket is highly privileged. Leave this disabled unless you specifically need it.
-
-## Last Sync
-
-The Last Sync field is derived from the newest SnapRAID `content` file modification time. Jobs launched through the dashboard are additionally recorded in SQLite with start/result/duration.
-
-
-## Automatic schedule
-
-The dashboard includes a persistent scheduler stored in the monitor SQLite database.
-
-Customers can configure:
-
-- Daily automatic SnapRAID sync
-- Sync time
-- Timezone (UTC, common U.S. zones, Sri Lanka)
-- Weekly 10% scrub
-- Scrub day and time
-
-The server itself may run on UTC; the scheduler executes according to the timezone selected in the dashboard.
-
-The background collector and scheduler start under Gunicorn automatically, so no host cron or systemd timer is required.
+To upgrade a deployment with old schedules enabled, updating to this version makes those settings inert: no scheduler is started and the API cannot save or execute them.
