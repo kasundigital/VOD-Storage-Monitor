@@ -288,8 +288,8 @@ def snapraid_summary():
 
     log_text = observation['log']['text']
     exits = re.findall(r'^summary:exit:(\\w+)\\s*$', log_text, re.M)
-    last_log_result = ('OK' if exits[-1] == 'ok' else
-                       'Failed' if exits else 'Unknown')
+    last_log_result = ('Unknown' if not exits else
+                       'OK' if exits[-1] == 'ok' else 'Failed')
     config = snapraid_config_summary()
     warnings = list(dict.fromkeys(
         line.strip() for line in status.splitlines()
