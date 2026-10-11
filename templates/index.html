@@ -38,7 +38,7 @@
     <div><span>Diff</span><b id="snapDiff">{% if data.snapraid.maintenance_running %}Paused during {{data.snapraid.job.name}}{% else %}{{'Snapshot OK' if data.snapraid.diff_ok is sameas true else ('Snapshot error' if data.snapraid.diff_ok is sameas false else 'Not collected')}}{% endif %}</b></div>
   </div>
 
-  <div class="info-note">Lock-free monitoring: the dashboard never runs SnapRAID commands. Status and diff are optional host-captured snapshots, not live checks. Snapshot: <b id="snapSnapshotTime">{{data.snapraid.snapshot_time or "Not collected"}}</b>. Scrub verified: <b id="snapScrubCoverage">{{(data.snapraid.scrub_coverage|string + "%") if data.snapraid.scrub_coverage is not none else "Unknown"}}</b>. Last sync log result: <b id="snapLastLogResult">{{data.snapraid.last_log_result}}</b>. Values may be stale.</div>
+  <div class="info-note">Monitoring only · Lock-free: the dashboard never runs SnapRAID commands. Status and diff are optional host-captured snapshots, not live checks. Snapshot: <b id="snapSnapshotTime">{{data.snapraid.snapshot_time or "Not collected"}}</b>. Scrub verified: <b id="snapScrubCoverage">{% if data.snapraid.scrub_coverage is not none %}{{data.snapraid.scrub_coverage}}%{% else %}Unknown{% endif %}</b>. Last sync log result: <b id="snapLastLogResult">{{data.snapraid.last_log_result}}</b>. Values may be stale.</div>
   <div class="job-box" aria-live="polite">
     <div class="job-head"><b id="jobTitle">Checking SnapRAID process…</b><span id="jobElapsed">Read-only</span></div>
     <div class="subtle">Log file: <span id="snapLogPath">Loading…</span> · Last modified: <span id="snapLogUpdated">-</span></div>
