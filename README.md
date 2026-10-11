@@ -56,12 +56,30 @@ To see an active SnapRAID process that runs on the host, `/proc:/host/proc:ro` i
 - No Sync, Scrub, Check, Cancel, or schedule buttons
 - No write-action or schedule API routes
 - No background scheduler; old persisted schedules cannot execute
-- Data, content, and device host mounts are specified read-only (`/docker`, `/mnt`, `/var/lib/snapraid`, `/dev`); the application keeps its own SQLite database in `./data:/data`
+- Most host mounts remain read-only (`/docker`, `/mnt`, `/dev`). **`/var/lib/snapraid` is mounted read-write** because SnapRAID creates `/var/lib/snapraid/snapraid.content.lock` even when running `snapraid status` or `snapraid diff`. The application keeps its own SQLite database in `./data:/data`
 - The browser can view process and log output, disk SMART, storage utilization, and existing maintenance history
 
-**Important:** `privileged: true` remains in the example Compose deployment for compatibility with low-level SMART access across many HDDs. This privilege means the *container itself is not a strong OS-level security boundary*, even though the application exposes no maintenance commands and bind mounts are set `:ro`. Deploy only on trusted networks and keep login credentials private. A future hardened deployment should use only the exact device/capability permissions required by the target host.
+**Important:** `privileged: true` remains in the example Compose deployment for compatibility with low-level SMART access across many HDDs. This privilege means the *container itself is not a strong OS-level security boundary*, even though the application exposes no maintenance commands and most bind mounts are set `:ro`. The SnapRAID content directory is writable from this privileged container; a compromised monitor could damage critical SnapRAID metadata. Back up SnapRAID content files and restrict access accordingly. Deploy only on trusted networks and keep login credentials private. A future hardened deployment should use only the exact device/capability permissions required by the target host.
 
-SnapRAID `status` and `diff` may be unavailable on some read-only filesystem/locking configurations; when they are, the dashboard continues showing disks, process and logs instead of changing any data.
+### SnapRAID content lock permissions
+
+SnapRAID creates a `.snapraid.content.lock` file beside its content file even for `snapraid status` and `snapraid diff`. A read-only bind mount at `/var/lib/snapraid` causes the error:
+
+```text
+Failed to create the lock file '/var/lib/snapraid/snapraid.content.lock'. Read-only file system.
+```
+
+The supplied Compose file uses `/var/lib/snapraid:/var/lib/snapraid:rw` to let these monitoring queries acquire their lock. **This is a functional workaround, not a strictly read-only security design:** the privileged monitor gains write access to content metadata, although its application exposes no sync/scrub/fix actions. Deploy only on a trusted or VPN-restricted network. A host-side collector that exports status results without handing the dashboard writable SnapRAID metadata would provide stronger isolation.
+
+If updating an existing installation, also update the local `/docker/vod-monitor/docker-compose.yml` mount from `:ro` to `:rw`, then run `docker compose up -d --no-deps --force-recreate vod-monitor`. Updating the image alone cannot change an existing local Compose mount.
+
+Verify with:
+
+```bash
+docker exec vod-monitor snapraid -c /etc/snapraid.conf status
+```
+
+If an external SnapRAID job owns the lock, wait until it finishes. The monitor pauses its own status/diff queries while it detects host maintenance.
 
 Optional Docker listing requires `ENABLE_DOCKER_MONITOR=true` and a manually added `/var/run/docker.sock` mount. Docker socket access is highly privileged even when mounted read-only and is **not** enabled by default.
 
