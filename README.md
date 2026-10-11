@@ -1,25 +1,23 @@
-# VOD Storage Monitor — Read-only dashboard
+# VOD Storage Monitor — lock-free, monitoring-only dashboard
 
-A monitoring-only dashboard for Linux VOD servers using mergerFS, SnapRAID, and mdadm.
+Monitor mergerfs capacity, mdadm RAID arrays, HDD/NVMe SMART health, and external SnapRAID jobs without interrupting recovery or scrubbing.
 
-**The dashboard cannot start, schedule, cancel, or control a SnapRAID operation.** All SnapRAID work must be managed externally via SSH, cron, or systemd. Existing scheduled settings from older versions are ignored (the scheduler is removed).
+**The web application never invokes the `snapraid` executable — not even `status` or `diff`.** SnapRAID uses an exclusive content lock for those commands, and a 60-second dashboard poll previously raced with manually launched scrubs. This release removes that source of contention entirely.
 
-## What you can view
+## What it shows
 
-- `/mnt/vod` total, used, free capacity and utilization
-- `/docker` storage statistics
-- mdadm RAID health and progress
-- SnapRAID status/diff summaries and last sync content-file timestamp
-- Active **host** SnapRAID job (for example, a sync started via cron, SSH or systemd) with start time and elapsed time
-- **Last run** (operation, result, when it ended, how long it took) and **last failure**
+- VOD and Docker storage utilization, mdadm array state and progress, and SMART health/temperatures
+- Running SnapRAID jobs detected from host `/proc`, with start time, elapsed time and progress if the log has it
+- **Last run** (operation, OK / Warning / Error, when it ended, how long it took) and **last failure**
 - **Last sync** age, highlighted when older than `SYNC_STALE_HOURS` (default 26h)
-- Scrub age (newest/oldest scrubbed block, % never scrubbed), array errors and interrupted syncs, parsed from `snapraid status`
-- **Run history**: every host sync/scrub/check/fix the monitor sees finish, with start, end, duration and result
-- SMART disk health, temperatures, runtime, reallocated/pending sectors (sleeping disks are not woken up)
-- Optional Docker container listing
-- Responsive dashboard and password login
+- Last existing sync log outcome (`summary:exit:ok` means **the observed log** ended OK)
+- From the host snapshot: scrub age (newest/oldest block), % never scrubbed, array errors and interrupted syncs (highlighted when the newest scrub is older than `SCRUB_STALE_DAYS`, default 14)
+- SMART reallocated/pending/uncorrectable sectors; sleeping disks are not woken up (`smartctl -n standby`)
+- SnapRAID disk/parity/content configuration parsed from the mounted configuration
+- Optional **host-captured** SnapRAID status/diff snapshot with capture time and scrub coverage
+- **Run history** of host jobs, optional Docker listing, responsive authenticated UI
 
-The app performs read-only inspection commands such as `df`, `lsblk`, `smartctl -x -n standby`, `snapraid status`, and `snapraid diff` when no host SnapRAID process is active. `status`/`diff` read every data disk, so they run only every `SNAPRAID_CHECK_SECONDS` (default 900) and right after a host job finishes. These are not maintenance operations. While a host SnapRAID command owns the content lock, the dashboard pauses its own status/diff queries, shows the active process and available log output, and marks those readings as paused, **not failed**.
+**Important accuracy rule:** The monitor does not call a historical sync log a live health check. It displays `Last log OK` instead of `Protected`. Without a snapshot, pending changes, status, diff and scrub coverage display **Unknown / Not collected**, never zero or failed. A snapshot is a point-in-time reading, not continuously verified protection.
 
 ## Install
 
@@ -33,55 +31,69 @@ docker compose pull
 docker compose up -d
 ```
 
-Set strong `ADMIN_PASSWORD` and `SECRET_KEY`. Generate a secret with `openssl rand -hex 32`.
+Use strong `ADMIN_PASSWORD` and `SECRET_KEY`; generate a secret with `openssl rand -hex 32`. Open `http://SERVER-IP:8099` only on a trusted network or behind an authenticated HTTPS/VPN proxy.
 
-Open `http://SERVER-IP:8099`.
+Image: `ghcr.io/kasundigital/vod-storage-monitor:latest`.
 
-Container image: `ghcr.io/kasundigital/vod-storage-monitor:latest`.
+## Lock-free SnapRAID monitoring
 
-## How last run / result is detected
+The default Compose file intentionally keeps `/var/lib/snapraid:/var/lib/snapraid:ro`. This is safe because the monitor **never calls SnapRAID**, and therefore never tries to create `snapraid.content.lock`. The earlier workaround of switching this mount to `:rw` is **not needed and should be reverted** when deploying this release.
 
-A background watcher looks for `snapraid` processes on the host every 10 seconds (via `/proc:/host/proc:ro`). When a sync, scrub, check, fix or touch ends, it records the start time, end time and duration. The result (OK / Warning / Error, plus file/io/data error counts) is read from the SnapRAID log if that log was written during the run:
+The app reads the configured external sync log (`SNAPRAID_LOG_PATH`, default `/docker/snapraid-recovery-backup/resync-final.log`). It reads existing files through the read-only `/docker:/docker:ro` bind mount. Set `SNAPRAID_SCRUB_LOG_PATH` to the actual existing scrub log if you want that log displayed during a running scrub. Logs may be historical; the process indicator is independent.
 
-- best: run SnapRAID with `-l <file>` (its `summary:exit:ok|warning|error` lines are used), or
-- redirect the console output to the log file (`Everything OK`, `DANGER!`, `WARNING!` lines are used).
+### Optional accurate status/diff snapshot (manual, host only)
 
-If no matching log is found, the run is recorded as **Finished** (result unknown). Runs that started and ended while the monitor was stopped are not recorded.
+SnapRAID's `status` and `diff` themselves take the SnapRAID content lock. To avoid a monitoring race, **there is no automatic timer, cron job, or background status/diff collector**. If you want status/diff/pending counts and scrub coverage on the dashboard, capture them **manually on the Ubuntu host after maintenance has finished**, while no other SnapRAID process is running:
 
-## Existing SnapRAID log
-
-The monitor **does not start SnapRAID to produce a log**. It reads the existing file specified by `SNAPRAID_LOG_PATH` (a glob such as `/docker/snapraid/logs/*.log` picks the newest file). Default:
-
-```env
-SNAPRAID_LOG_PATH=/docker/snapraid-recovery-backup/resync-final.log
+```bash
+curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/scripts/capture-snapraid-snapshot.py \
+  -o /tmp/capture-snapraid-snapshot.py
+python3 /tmp/capture-snapraid-snapshot.py
 ```
 
-This should be the path *inside the container*, backed by the read-only `/docker:/docker:ro` host mount. Point it to the actual existing log file on your system. If your log is outside `/docker`, add an additional **read-only** bind mount to the Compose file and use its in-container path. Only the last ~96 KiB of the log is read; the dashboard shows the parsed result, not the log text.
+The script checks for a running SnapRAID process, runs `snapraid status` then `snapraid diff` on the host, and atomically saves a timestamped JSON snapshot to `/docker/vod-monitor/data/snapraid-snapshot.json`. It does not modify parity or media files; the commands acquire their normal temporary content lock. **Do not run it during sync/scrub/fix**, and remember that a new maintenance operation could theoretically start between its checks unless host maintenance is coordinated.
 
-For the server `den-sm5049p-1`, the active external recovery command previously used `/docker/snapraid-recovery-backup/resync-final.log`.
+The dashboard reads this JSON file through `/docker:/docker:ro`. The snapshot timestamp is displayed prominently. Snapshot data becomes historical as soon as files change; no live pending-change guarantee is implied. If no snapshot exists, the monitor still provides full disk, RAID, process, and log monitoring.
 
-To see an active SnapRAID process that runs on the host, `/proc:/host/proc:ro` is mounted. The dashboard displays the operation and PID but has no way to send signals or start jobs. **Percentage progress only appears if the external log actually contains percentage lines; no progress estimate is fabricated.**
+For a running scrub, you can keep the monitor online throughout the operation: it does not acquire a SnapRAID lock.
 
-## Read-only operation and permissions
+## Run history (last run / failures)
 
-- No Sync, Scrub, Check, Cancel, or schedule buttons
-- No write-action or schedule API routes
-- No background scheduler; old persisted schedules cannot execute
-- Data, content, and device host mounts are specified read-only (`/docker`, `/mnt`, `/var/lib/snapraid`, `/dev`); the application keeps its own SQLite database in `./data:/data`
-- The browser can view process and log output, disk SMART, storage utilization, and existing maintenance history
+A background watcher looks for `snapraid` processes on the host every 10 seconds (via `/proc:/host/proc:ro`). It only reads `/proc`; it never runs SnapRAID. When a sync, scrub, check, fix or touch ends, it records start time, end time and duration in `./data`. The result (OK / Warning / Error, plus file/io/data error counts) is read from the job's log (`SNAPRAID_LOG_PATH`, or `SNAPRAID_SCRUB_LOG_PATH` for scrubs) if that log was written during the run:
 
-**Important:** `privileged: true` remains in the example Compose deployment for compatibility with low-level SMART access across many HDDs. This privilege means the *container itself is not a strong OS-level security boundary*, even though the application exposes no maintenance commands and bind mounts are set `:ro`. Deploy only on trusted networks and keep login credentials private. A future hardened deployment should use only the exact device/capability permissions required by the target host.
+- best: run SnapRAID with `-l <file>` (its `summary:exit:ok|warning|error` lines are used), or
+- redirect console output to the log file (`Everything OK`, `DANGER!`, `WARNING!` lines are used).
 
-SnapRAID `status` and `diff` may be unavailable on some read-only filesystem/locking configurations; when they are, the dashboard continues showing disks, process and logs instead of changing any data.
+Log paths may be globs such as `/docker/snapraid/logs/*.log`; the newest matching file is used. If no log was written during the run, it is recorded as **Finished** (result unknown). Jobs that start and end while the monitor is stopped are not recorded.
 
-Optional Docker listing requires `ENABLE_DOCKER_MONITOR=true` and a manually added `/var/run/docker.sock` mount. Docker socket access is highly privileged even when mounted read-only and is **not** enabled by default.
+"Last sync" uses the last sync recorded as OK in this history. Until one exists it falls back to the content file time, which scrub/fix also update.
 
-## Updating
+## Updating an existing server
+
+1. **Stop the monitor only** while changing its Compose configuration: `docker stop vod-monitor`.
+2. Back up `/docker/vod-monitor/docker-compose.yml` and `.env`.
+3. After this change is merged and a new GHCR image is published, run the repository `update.sh` or manually download the updated Compose file and pull/recreate **only** `vod-monitor`.
+4. Confirm `/var/lib/snapraid:/var/lib/snapraid:ro` and that the dashboard shows `Not collected` (not `Failed`) before the first manual snapshot.
+5. Optional: capture a host snapshot when SnapRAID is idle, then verify the snapshot time and status/diff fields.
+
+To update using the published release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kasundigital/VOD-Storage-Monitor/main/update.sh | bash
 ```
 
-The updater recreates only the *monitor* container. Existing `.env` and `./data` are preserved. Host SnapRAID syncs launched outside the dashboard remain independent of the monitor.
+The updater backs up the local Compose file before replacing it, preserves `.env` and `./data`, and recreates only `vod-monitor`. Do **not** run the updater until the change is merged and the new image is available.
 
-To upgrade a deployment with old schedules enabled, updating to this version makes those settings inert: no scheduler is started and the API cannot save or execute them.
+## Security
+
+The web app exposes no Sync/Scrub/Fix/Cancel/scheduling routes. Host disks, SnapRAID metadata, and logs remain mounted read-only; only `./data:/data` is writable. The sample Compose deployment still uses `privileged: true` for low-level SMART compatibility, so it is **not** a strong security boundary. Restrict dashboard access, never expose it unprotected on a public IP, and consider a more narrowly privileged collector in the future.
+
+Docker listing is disabled by default (`ENABLE_DOCKER_MONITOR=false`); exposing `docker.sock` to a container is highly privileged even with a read-only bind mount.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+The regression suite asserts that status refresh never invokes SnapRAID, even when idle, and that unavailable snapshot data is reported as unknown.

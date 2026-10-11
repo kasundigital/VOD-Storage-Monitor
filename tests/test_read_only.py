@@ -77,6 +77,54 @@ class ReadOnlyTests(unittest.TestCase):
         self.assertIsNone(result['diff_ok'])
 
 
+    def test_idle_dashboard_never_executes_snapraid(self):
+        observation = {
+            'running': False, 'name': None, 'progress': None,
+            'processes': [],
+            'log': {'path': '/tmp/sync.log', 'updated': None,
+                    'text': 'summary:error_io:0\nsummary:exit:ok\n', 'error': None}
+        }
+        with patch.object(monitor, 'snapraid_observation', return_value=observation), \
+             patch.object(monitor, 'run', side_effect=AssertionError('no commands allowed')), \
+             patch.object(monitor, 'snapraid_last_sync', return_value=None), \
+             patch.object(monitor, 'snapraid_config_summary', return_value={'data_disks': 30, 'parity_levels': 4}), \
+             patch.object(monitor, 'SNAPRAID_SNAPSHOT_PATH', '/tmp/no-such-snapraid-snapshot-98765.json'):
+            result = monitor.snapraid_summary()
+        self.assertEqual(result['protection'], 'Last log OK')
+        self.assertIsNone(result['pending_total'])
+        self.assertIsNone(result['status_ok'])
+        self.assertIsNone(result['diff_ok'])
+        self.assertIsNone(result['scrub_coverage'])
+        self.assertTrue(any('five parity levels' in w for w in result['warnings']))
+
+    def test_host_snapshot_is_historical_and_scrub_coverage_parses(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'snapraid-snapshot.json')
+            with open(path, 'w', encoding='utf-8') as stream:
+                json.dump({
+                    'schema': 1, 'captured_at': '2026-10-11T12:00:00+00:00',
+                    'status_rc': 0, 'diff_rc': 0,
+                    'status': 'No error detected.\n96% of the array is not scrubbed.\n',
+                    'diff': ' 300 equal\n 0 added\n 0 removed\n 0 updated\n'
+                            ' 0 moved\n 0 copied\n 0 restored\n',
+                }, stream)
+            observation = {
+                'running': False, 'name': None, 'progress': None, 'processes': [],
+                'log': {'path': '', 'updated': None, 'text': '', 'error': None}
+            }
+            with patch.object(monitor, 'SNAPRAID_SNAPSHOT_PATH', path), \
+                 patch.object(monitor, 'snapraid_observation', return_value=observation), \
+                 patch.object(monitor, 'snapraid_last_sync', return_value=None), \
+                 patch.object(monitor, 'snapraid_config_summary', return_value={'data_disks': 0, 'parity_levels': 0}), \
+                 patch.object(monitor, 'run', side_effect=AssertionError('must never run snapraid')):
+                result = monitor.snapraid_summary()
+            self.assertEqual(result['scrub_coverage'], 4)
+            self.assertEqual(result['pending_total'], 0)
+            self.assertTrue(result['status_ok'])
+            self.assertEqual(result['snapshot_time'], '2026-10-11T12:00:00+00:00')
+            self.assertNotEqual(result['protection'], 'Protected')
+
 
 class ParsingTests(unittest.TestCase):
     def test_status_health_facts(self):
@@ -131,6 +179,32 @@ class JobHistoryTests(unittest.TestCase):
         self.assertEqual(summary['last_failed']['message'], 'data errors: 1')
         self.assertIsNone(summary['last_sync_ok'])
         self.assertEqual(summary['last']['duration'], '1h 0m')
+
+    def test_job_watcher_never_executes_snapraid(self):
+        with patch.object(monitor, 'run', side_effect=AssertionError('must never run snapraid')), \
+             patch.object(monitor.subprocess, 'run', side_effect=AssertionError('must never run snapraid')), \
+             patch.object(monitor, 'snapraid_processes', return_value=[]):
+            monitor.watch_jobs_once()
+
+    def test_snapshot_errors_and_interrupted_sync_are_reported(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'snapshot.json')
+            with open(path, 'w', encoding='utf-8') as stream:
+                json.dump({'schema': 1, 'captured_at': '2026-10-11T12:00:00+00:00',
+                           'status_rc': 0, 'diff_rc': 0, 'diff': '',
+                           'status': 'The oldest block was scrubbed 40 days ago, the median 9, the newest 20.\n'
+                                     'DANGER! In the array there are 2 errors!\n'}, stream)
+            observation = {'running': False, 'name': None, 'progress': None, 'processes': [],
+                           'log': {'path': '', 'updated': None, 'text': 'summary:exit:ok\n', 'error': None}}
+            with patch.object(monitor, 'SNAPRAID_SNAPSHOT_PATH', path), \
+                 patch.object(monitor, 'snapraid_observation', return_value=observation), \
+                 patch.object(monitor, 'snapraid_last_sync', return_value=None), \
+                 patch.object(monitor, 'snapraid_config_summary', return_value={}):
+                result = monitor.snapraid_summary()
+        self.assertEqual(result['protection'], 'Errors in snapshot')
+        self.assertEqual(result['health']['errors'], 2)
+        self.assertTrue(result['scrub_stale'])
 
 
 if __name__ == '__main__':

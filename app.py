@@ -9,12 +9,12 @@ APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv('DB_PATH', '/data/vodmon.db'))
 SNAPRAID_CONFIG = os.getenv('SNAPRAID_CONFIG', '/etc/snapraid.conf')
 SNAPRAID_LOG_PATH = os.getenv('SNAPRAID_LOG_PATH', '/docker/snapraid-recovery-backup/resync-final.log')
+SNAPRAID_SNAPSHOT_PATH = os.getenv('SNAPRAID_SNAPSHOT_PATH', '/docker/vod-monitor/data/snapraid-snapshot.json')
+SNAPRAID_SCRUB_LOG_PATH = os.getenv('SNAPRAID_SCRUB_LOG_PATH', '')
 REFRESH_SECONDS = int(os.getenv('REFRESH_SECONDS', '60'))
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-# SnapRAID status/diff scan every data disk, so they run far less often than the dashboard refresh.
-SNAPRAID_CHECK_SECONDS = int(os.getenv('SNAPRAID_CHECK_SECONDS', '900'))
 SYNC_STALE_HOURS = float(os.getenv('SYNC_STALE_HOURS', '26'))
 SCRUB_STALE_DAYS = float(os.getenv('SCRUB_STALE_DAYS', '14'))
 APP_VERSION = os.getenv('APP_VERSION', '0.6.0')
@@ -84,13 +84,14 @@ def empty_dashboard():
         },
         'raid': [],
         'snapraid': {
-            'status_rc':None,'diff_rc':None,'status_ok':False,'diff_ok':False,
+            'status_rc':None,'diff_rc':None,'status_ok':None,'diff_ok':None,
             'status_raw':'','diff_raw':'',
             'changes':{'equal':0,'added':0,'removed':0,'updated':0,'moved':0,'copied':0,'restored':0},
-            'pending_total':0,'protection':'Initializing','warnings':[],'last_sync':None,
-            'config':{'data_disks':0,'parity_levels':0,'content_copies':0,'parity_paths':[]},
-            'health':parse_status(''),'checked':None,'maintenance_running':False,
-            'job':{'name':None,'progress':None}
+            'pending_total':None,'protection':'Initializing','warnings':[],'last_sync':None,
+            'snapshot_time':None,'snapshot_error':None,'scrub_coverage':None,
+            'last_log_result':'Unknown','health':parse_status(''),'scrub_stale':False,
+            'maintenance_running':False,'job':{'name':None,'progress':None},
+            'config':{'data_disks':0,'parity_levels':0,'content_copies':0,'parity_paths':[]}
         },
         'disks': [],
         'docker': {'enabled':ENABLE_DOCKER,'containers':[]},
@@ -100,10 +101,11 @@ def empty_dashboard():
         'disk_health': {'total':0,'healthy':0,'failed':0,'warning':0,'other':0,'standby':0,'max_temp':None}
     }
 
-cache = {'data': empty_dashboard(), 'updated': None, 'collecting': False, 'snapraid_checked': 0}
+cache = {'data': empty_dashboard(), 'updated': None, 'collecting': False}
 lock = threading.Lock()
-# This application NEVER launches maintenance jobs. Host processes and logs are observed
-# through read-only mounts, including jobs started via SSH, cron or systemd.
+# The web application NEVER invokes snapraid (including status or diff).
+# All SnapRAID readings come from host processes, existing logs, and optional
+# manually captured snapshots; no dashboard refresh can acquire the content lock.
 SNAPRAID_OPERATIONS = ('sync', 'scrub', 'check', 'fix', 'status', 'diff', 'touch', 'list', 'dup', 'smart')
 
 
@@ -143,7 +145,7 @@ def snapraid_processes():
             if not entry.name.isdigit():
                 continue
             try:
-                # Exclude this monitor's own status/diff subprocesses.
+                # Ignore processes sharing the monitor's PID namespace.
                 if own_pidns and os.readlink(entry / 'ns/pid') == own_pidns:
                     continue
                 argv = [p.decode('utf-8', errors='replace') for p in
@@ -162,17 +164,22 @@ def snapraid_processes():
     return sorted(processes, key=lambda p: p['pid'])
 
 
-def snapraid_log_file():
-    """SNAPRAID_LOG_PATH may be a glob (e.g. /docker/snapraid/logs/*.log); use the newest match."""
-    path = SNAPRAID_LOG_PATH
+def resolve_log_path(path):
+    """A log path may be a glob (e.g. /docker/snapraid/logs/*.log); use the newest match."""
     if path and glob.has_magic(path):
         matches = [m for m in glob.glob(path) if os.path.isfile(m)]
         return max(matches, key=os.path.getmtime) if matches else path
     return path
 
 
-def read_snapraid_log():
-    path = snapraid_log_file()
+def log_path_for(operation):
+    if operation == 'scrub' and SNAPRAID_SCRUB_LOG_PATH:
+        return SNAPRAID_SCRUB_LOG_PATH
+    return SNAPRAID_LOG_PATH
+
+
+def read_snapraid_log(path=None):
+    path = resolve_log_path(SNAPRAID_LOG_PATH if path is None else path)
     if not path:
         return {'path': '', 'updated': None, 'mtime': None, 'text': '',
                 'error': 'Set SNAPRAID_LOG_PATH to an existing, mounted log file.'}
@@ -226,7 +233,7 @@ def latest_progress(text):
 
 def snapraid_observation():
     processes = snapraid_processes()
-    log = read_snapraid_log()
+    log = read_snapraid_log(log_path_for(processes[0]['name'] if processes else None))
     progress = latest_progress(log['text']) if processes else None
     outcome = log_result(log['text'])
     return {'running': bool(processes), 'processes': processes,
@@ -258,8 +265,8 @@ def watch_jobs_once():
             current[f"{p['pid']}:{int(started or 0)}"] = {'name': p['name'], 'started': started}
     finished = [job for key, job in active.items() if key not in current]
     if finished:
-        log = read_snapraid_log()
         for job in finished:
+            log = read_snapraid_log(log_path_for(job['name']))
             started = job.get('started') or time.time()
             outcome = {'result': None, 'detail': None}
             # Only trust the log if it was written during this run.
@@ -271,8 +278,6 @@ def watch_jobs_once():
             c.execute('INSERT INTO events(ts,kind,status,message,duration) VALUES(?,?,?,?,?)',
                       (datetime.fromtimestamp(started, timezone.utc).isoformat(), job['name'], status,
                        message, time.time() - started))
-        # Refresh status/diff as soon as a job finishes.
-        cache['snapraid_checked'] = 0
     if finished or set(active) != set(current):
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('active_jobs',?)", (json.dumps(current),))
     c.commit()
@@ -465,79 +470,103 @@ def snapraid_last_sync():
             'stale': age_hours > SYNC_STALE_HOURS}
 
 
+def read_snapraid_snapshot():
+    """Read a host-produced snapshot. Never execute SnapRAID from the monitor."""
+    try:
+        data = json.loads(Path(SNAPRAID_SNAPSHOT_PATH).read_text(errors='replace'))
+        if not isinstance(data, dict) or data.get('schema') != 1:
+            raise ValueError('Unsupported snapshot format')
+        if not isinstance(data.get('status'), str) or not isinstance(data.get('diff'), str):
+            raise ValueError('Missing status/diff text')
+        if not isinstance(data.get('captured_at'), str):
+            raise ValueError('Missing capture timestamp')
+        if not isinstance(data.get('status_rc'), int) or not isinstance(data.get('diff_rc'), int):
+            raise ValueError('Missing status/diff exit codes')
+        return data, None
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError, TypeError) as exc:
+        return None, str(exc)
+
+
 def snapraid_summary():
     observation = snapraid_observation()
     running = observation['running']
-    previous = cache.get('data', {}).get('snapraid', {})
-    due = time.time() - cache.get('snapraid_checked', 0) >= SNAPRAID_CHECK_SECONDS
+    snapshot, snapshot_error = read_snapraid_snapshot()
+    status = snapshot['status'] if snapshot else ''
+    diff = snapshot['diff'] if snapshot else ''
+    rc = snapshot['status_rc'] if snapshot else None
+    rc2 = snapshot['diff_rc'] if snapshot else None
+    status_ok = (rc == 0) if snapshot else None
+    diff_ok = (rc2 in (0, 2)) if snapshot else None
+    pending = {key: None for key in
+               ('equal', 'added', 'removed', 'updated', 'moved', 'copied', 'restored')}
+    pending_total = None
+    if diff_ok:
+        for key in pending:
+            match = re.search(r'^\s*([0-9]+)\s+' + re.escape(key) + r'\s*$', diff, re.M)
+            if match:
+                pending[key] = int(match.group(1))
+        # Do not present 0 when the diff format could not be parsed.
+        if all(v is not None for v in pending.values()):
+            pending_total = sum(v for k, v in pending.items() if k != 'equal')
 
-    if running or not due:
-        # While an externally managed SnapRAID operation owns the content lock, don't run
-        # status/diff or misreport lock errors as failures. Between checks, reuse the last result.
-        rc = previous.get('status_rc')
-        rc2 = previous.get('diff_rc')
-        status = previous.get('status_raw', '')
-        status_ok = None if running else previous.get('status_ok')
-        diff_ok = None if running else previous.get('diff_ok')
-        pending = dict(previous.get('changes', {}))
-        diff_warnings = previous.get('diff_warnings', [])
-        checked = previous.get('checked')
-    else:
-        rc, status = run(['snapraid', '-c', SNAPRAID_CONFIG, 'status'], timeout=180)
-        status_ok = (rc == 0 and bool(status.strip()))
-        rc2, diff = run(['snapraid', '-c', SNAPRAID_CONFIG, 'diff'], timeout=600)
-        diff_ok = (rc2 in (0, 2) and bool(diff.strip()))
-        pending = {}
-        for key in ['equal', 'added', 'removed', 'updated', 'moved', 'copied', 'restored']:
-            match = re.search(r'^\s*([0-9]+)\s+' + re.escape(key) + r'\s*$', diff, re.M) if diff else None
-            pending[key] = int(match.group(1)) if match else 0
-        # diff lists every changed file; keep only its warnings, not the whole output.
-        diff_warnings = [l.strip() for l in diff.splitlines() if 'WARNING!' in l]
-        cache['snapraid_checked'] = time.time()
-        checked = fmt_time(cache['snapraid_checked'])
-
-    hidden_warning = "WARNING! For 30 disks, it's recommended to use five parity levels."
+    log = observation['log']
+    last_log_result = log.get('result') or log_result(log.get('text', ''))['result'] or 'Unknown'
+    if last_log_result == 'Error':
+        last_log_result = 'Failed'
+    config = snapraid_config_summary()
     warnings = list(dict.fromkeys(
-        line for line in [l.strip() for l in status.splitlines() if 'WARNING!' in l] + diff_warnings
-        if line != hidden_warning
+        line.strip() for line in status.splitlines()
+        if 'WARNING!' in line
     ))
-    pending_total = sum(value for key, value in pending.items() if key != 'equal')
-    health = parse_status(status)
-    last_sync = snapraid_last_sync()
+    if config.get('data_disks', 0) >= 30 and config.get('parity_levels', 0) < 5:
+        recommendation = 'WARNING! For 30 data disks, SnapRAID recommends five parity levels.'
+        if not any('five parity levels' in w for w in warnings):
+            warnings.append(recommendation)
+
+    coverage = None
+    if status_ok:
+        match = re.search(r'(\d+)% of the array is not scrubbed', status)
+        if match:
+            coverage = 100 - int(match.group(1))
+
+    # Scrub age, errors and interrupted sync come from the host snapshot only.
+    health = parse_status(status if status_ok else '')
 
     if running:
-        name = observation['name']
-        protection = {'sync':'Syncing', 'scrub':'Scrubbing', 'fix':'Repair in progress',
-                      'check':'Checking'}.get(name, 'SnapRAID busy')
-    elif status_ok is None:
-        protection = 'Initializing'
-    elif not status_ok:
-        protection = 'Unavailable'
+        protection = {'sync': 'Syncing', 'scrub': 'Scrubbing', 'fix': 'Repair in progress',
+                      'check': 'Checking'}.get(observation['name'], 'SnapRAID busy')
     elif health['errors']:
-        protection = 'Errors detected'
+        protection = 'Errors in snapshot'
     elif health['sync_in_progress']:
         protection = 'Sync interrupted'
-    elif diff_ok is False:
-        protection = 'Status OK / Diff unavailable'
-    elif pending_total == 0:
-        protection = 'Protected'
+    elif last_log_result == 'OK':
+        protection = 'Last log OK'
+    elif last_log_result == 'Failed':
+        protection = 'Last log failed'
+    elif last_log_result == 'Warning':
+        protection = 'Last log warning'
     else:
-        protection = 'Changes Pending'
+        protection = 'Not verified'
 
     scrub_stale = (health['scrub_newest_days'] is not None and health['scrub_newest_days'] > SCRUB_STALE_DAYS)
 
     return {
         'status_rc': rc, 'diff_rc': rc2, 'status_ok': status_ok,
-        'diff_ok': diff_ok, 'status_raw': status, 'diff_warnings': diff_warnings,
+        'diff_ok': diff_ok, 'status_raw': status, 'diff_raw': diff,
         'changes': pending, 'pending_total': pending_total,
         'protection': protection, 'warnings': warnings, 'health': health,
-        'scrub_stale': scrub_stale, 'checked': checked,
-        'last_sync': last_sync, 'config': snapraid_config_summary(),
+        'scrub_stale': scrub_stale,
+        'last_sync': snapraid_last_sync(), 'config': config,
+        'snapshot_time': snapshot['captured_at'] if snapshot else None,
+        'snapshot_error': snapshot_error,
+        'scrub_coverage': coverage, 'last_log_result': last_log_result,
         'maintenance_running': running,
         'job': {'name': observation['name'], 'progress': observation['progress'],
-                'started': observation['started'], 'elapsed': observation['elapsed'],
+                'started': observation.get('started'), 'elapsed': observation.get('elapsed'),
                 'pids': [p['pid'] for p in observation['processes']]},
-        'last_run': observation['last_run'],
+        'last_run': observation.get('last_run') or {},
     }
 
 
@@ -831,8 +860,7 @@ def index():
         threading.Thread(target=collect,daemon=True).start()
     data=cache.get('data') or empty_dashboard()
     return render_template('index.html', data=data, updated=cache['updated'] or 'initializing',
-                           events=history(20), last_run=last_run_summary(), stale_hours=SYNC_STALE_HOURS,
-                           check_minutes=max(1, SNAPRAID_CHECK_SECONDS // 60))
+                           events=history(20), last_run=last_run_summary(), stale_hours=SYNC_STALE_HOURS)
 
 @app.route('/api/status')
 @auth_required
