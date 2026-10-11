@@ -43,6 +43,17 @@ class ReadOnlyTests(unittest.TestCase):
             with open(path, 'r', encoding='utf-8') as stream:
                 self.assertEqual(stream.read(), 'summary:error_io:0\nsummary:exit:sync\n')
 
+    def test_dashboard_renders_with_no_maintenance_controls(self):
+        with patch.dict(monitor.cache, {'updated': 'test', 'data': monitor.empty_dashboard()}):
+            response = self.client.get('/')
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('Monitoring only', html)
+        self.assertIn('id="jobOutput"', html)
+        self.assertNotIn('id="syncEnabled"', html)
+        self.assertNotIn('actionRun(', html)
+        self.assertNotIn('saveSchedule(', html)
+
     def test_no_status_diff_launch_while_host_job_running(self):
         observation = {
             'running': True, 'name': 'sync', 'progress': None,
