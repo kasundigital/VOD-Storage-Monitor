@@ -167,10 +167,12 @@ class JobHistoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, 'sync.log')
             with open(path, 'w', encoding='utf-8') as stream:
-                stream.write('summary:error_data:1\nsummary:exit:error\n')
+                stream.write('summary:exit:ok\n')  # previous run, must be ignored
             with patch.object(monitor, 'SNAPRAID_LOG_PATH', path):
                 with patch.object(monitor, 'snapraid_processes', return_value=running):
                     monitor.watch_jobs_once()
+                with open(path, 'a', encoding='utf-8') as stream:
+                    stream.write('summary:error_data:1\nsummary:exit:error\n')
                 with patch.object(monitor, 'snapraid_processes', return_value=[]):
                     monitor.watch_jobs_once()
         summary = monitor.last_run_summary()
@@ -179,6 +181,47 @@ class JobHistoryTests(unittest.TestCase):
         self.assertEqual(summary['last_failed']['message'], 'data errors: 1')
         self.assertIsNone(summary['last_sync_ok'])
         self.assertEqual(summary['last']['duration'], '1h 0m')
+
+    def reset_history(self):
+        c = monitor.db(); c.execute('DELETE FROM events'); c.execute("DELETE FROM settings WHERE key='active_jobs'"); c.commit(); c.close()
+
+    def test_old_summary_in_append_log_is_not_credited_to_interrupted_run(self):
+        self.reset_history()
+        running = [{'pid': 7, 'name': 'sync', 'started': time.time() - 60}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'sync.log')
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write('summary:exit:ok\n')  # previous run
+            with patch.object(monitor, 'SNAPRAID_LOG_PATH', path):
+                with patch.object(monitor, 'snapraid_processes', return_value=running):
+                    monitor.watch_jobs_once()
+                with open(path, 'a', encoding='utf-8') as stream:
+                    stream.write('45%, 1200 MB\n')  # killed before its summary
+                with patch.object(monitor, 'snapraid_processes', return_value=[]):
+                    monitor.watch_jobs_once()
+        summary = monitor.last_run_summary()
+        self.assertEqual(summary['last']['status'], 'Finished')
+        self.assertIsNone(summary['last_sync_ok'])
+
+    def test_recovered_fix_is_not_a_failure(self):
+        result = monitor.log_result('summary:error_data:3\nsummary:exit:recovered\n')
+        self.assertEqual(result['result'], 'OK')
+        self.assertEqual(result['detail'], 'recovered (data errors: 3)')
+        self.assertEqual(monitor.log_result('summary:exit:unrecoverable\n')['result'], 'Error')
+
+    def test_legacy_started_markers_and_old_results_are_handled(self):
+        self.reset_history()
+        c = monitor.db()
+        rows = [('2026-01-01T00:00:00+00:00', 'sync', 'success', 'done', 60),
+                ('2026-01-01T00:00:00+00:00', 'sync', 'started', 'sync started from dashboard', 0),
+                ('2026-01-02T00:00:00+00:00', 'scrub', 'failed', 'io error', 60)]
+        rows += [(f'2026-02-{d:02d}T00:00:00+00:00', 'scrub', 'OK', 'fine', 60) for d in range(1, 28)] * 3
+        c.executemany('INSERT INTO events(ts,kind,status,message,duration) VALUES(?,?,?,?,?)', rows)
+        c.commit(); c.close()
+        summary = monitor.last_run_summary()
+        self.assertEqual(summary['last_failed']['message'], 'io error')
+        self.assertEqual(summary['last_sync_ok']['status'], 'success')
+        self.assertNotIn('started', [e['status'] for e in monitor.history(200)])
 
     def test_job_watcher_never_executes_snapraid(self):
         with patch.object(monitor, 'run', side_effect=AssertionError('must never run snapraid')), \

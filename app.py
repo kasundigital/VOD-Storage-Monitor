@@ -178,24 +178,29 @@ def log_path_for(operation):
     return SNAPRAID_LOG_PATH
 
 
-def read_snapraid_log(path=None):
+def read_snapraid_log(path=None, since=0):
+    """Tail of a log. With `since` (a byte offset), only text appended after it is returned,
+    unless the file shrank (rotated/truncated), in which case it is all new."""
     path = resolve_log_path(SNAPRAID_LOG_PATH if path is None else path)
     if not path:
-        return {'path': '', 'updated': None, 'mtime': None, 'text': '',
+        return {'path': '', 'updated': None, 'mtime': None, 'size': None, 'text': '',
                 'error': 'Set SNAPRAID_LOG_PATH to an existing, mounted log file.'}
     try:
         with open(path, 'rb') as stream:
             stream.seek(0, os.SEEK_END)
             total = stream.tell()
-            stream.seek(max(0, total - 98304))
+            start = since if 0 < since <= total else 0
+            offset = max(start, total - 98304)
+            stream.seek(offset)
             chunk = stream.read().decode('utf-8', errors='replace')
-        if total > 98304 and '\n' in chunk:
+        if offset > start and '\n' in chunk:
             chunk = chunk.split('\n', 1)[1]
         text = '\n'.join(chunk.splitlines()[-220:])
         mtime = Path(path).stat().st_mtime
-        return {'path': path, 'updated': fmt_time(mtime), 'mtime': mtime, 'text': text, 'error': None}
+        return {'path': path, 'updated': fmt_time(mtime), 'mtime': mtime, 'size': total,
+                'text': text, 'error': None}
     except OSError as exc:
-        return {'path': path, 'updated': None, 'mtime': None, 'text': '',
+        return {'path': path, 'updated': None, 'mtime': None, 'size': None, 'text': '',
                 'error': f'Log unavailable: {exc.strerror or str(exc)}'}
 
 
@@ -208,8 +213,12 @@ def log_result(text):
         if found:
             errors[kind] = int(found[-1])
     exits = re.findall(r'^summary:exit:(\w+)', text, re.M)
-    if exits and exits[-1] in ('ok', 'warning', 'error'):
-        result = {'ok': 'OK', 'warning': 'Warning', 'error': 'Error'}[exits[-1]]
+    # https://www.snapraid.it/manual-log : recovered = all errors were fixed.
+    exit_results = {'ok': 'OK', 'recovered': 'OK', 'warning': 'Warning',
+                    'error': 'Error', 'recoverable': 'Error', 'unrecoverable': 'Error'}
+    exit_status = exits[-1] if exits and exits[-1] in exit_results else None
+    if exit_status:
+        result = exit_results[exit_status]
     elif any(errors.values()) or re.search(r'^DANGER!|^\d+ (?:file|io|data) errors?', text, re.M | re.I):
         result = 'Error'
     elif re.search(r'^Everything OK|^Nothing to do|^No error detected', text, re.M):
@@ -218,7 +227,10 @@ def log_result(text):
         result = 'Warning'
     else:
         result = None
-    detail = ', '.join(f"{k.split('_', 1)[1]} errors: {v}" for k, v in errors.items() if v) or None
+    detail = ', '.join(f"{k.split('_', 1)[1]} errors: {v}" for k, v in errors.items() if v)
+    if exit_status in ('recovered', 'recoverable', 'unrecoverable'):
+        detail = exit_status + (f' ({detail})' if detail else '')
+    detail = detail or None
     return {'result': result, 'detail': detail}
 
 
@@ -262,14 +274,24 @@ def watch_jobs_once():
     for p in snapraid_processes():
         if p['name'] in TRACKED_OPERATIONS:
             started = p.get('started')
-            current[f"{p['pid']}:{int(started or 0)}"] = {'name': p['name'], 'started': started}
+            key = f"{p['pid']}:{int(started or 0)}"
+            if key in active:
+                current[key] = active[key]
+            else:
+                # Remember where the log ended when the job was first seen, so an
+                # older summary already in an append-style log is never credited to it.
+                log = read_snapraid_log(log_path_for(p['name']))
+                current[key] = {'name': p['name'], 'started': started,
+                                'log_path': log['path'], 'log_size': log['size'] or 0}
     finished = [job for key, job in active.items() if key not in current]
     if finished:
         for job in finished:
-            log = read_snapraid_log(log_path_for(job['name']))
+            path = resolve_log_path(log_path_for(job['name']))
+            since = job.get('log_size', 0) if path == job.get('log_path') else 0
+            log = read_snapraid_log(path, since=since)
             started = job.get('started') or time.time()
             outcome = {'result': None, 'detail': None}
-            # Only trust the log if it was written during this run.
+            # Only trust log text this run appended (or a new log file written during it).
             if log['mtime'] and log['mtime'] >= started - 5:
                 outcome = log_result(log['text'])
             status = outcome['result'] or 'Finished'
@@ -293,10 +315,12 @@ def job_watch_loop():
         time.sleep(10)
 
 
-def history(limit=20):
+def history(limit=20, where='', params=()):
+    # Older versions also stored a 'started' marker per run; those are not results.
     c = db()
-    rows = c.execute('SELECT ts,kind,status,message,duration FROM events ORDER BY ts DESC, id DESC LIMIT ?',
-                     (limit,)).fetchall()
+    rows = c.execute('SELECT ts,kind,status,message,duration FROM events '
+                     "WHERE status != 'started' " + where + ' ORDER BY ts DESC, id DESC LIMIT ?',
+                     (*params, limit)).fetchall()
     c.close()
     events = []
     for ts, kind, status, message, duration in rows:
@@ -315,20 +339,29 @@ def history(limit=20):
 
 def status_level(status):
     s = (status or '').lower()
-    if s in ('ok', 'success', 'succeeded', 'completed'):
+    if s in OK_STATUSES:
         return 'ok'
-    if s in ('warning', 'finished', 'unknown', 'cancelled'):
+    if s in NON_FAILURE_STATUSES:
         return 'warn'
     return 'bad'
 
 
+OK_STATUSES = ('ok', 'success', 'succeeded', 'completed')
+NON_FAILURE_STATUSES = OK_STATUSES + ('warning', 'finished', 'unknown', 'cancelled')
+
+
 def last_run_summary():
-    events = history(50)
-    last = events[0] if events else None
-    last_failed = next((e for e in events if e['level'] == 'bad'), None)
-    last_sync_ok = next((e for e in events if e['kind'] == 'sync' and e['level'] == 'ok'), None)
-    last_scrub = next((e for e in events if e['kind'] == 'scrub'), None)
-    return {'last': last, 'last_failed': last_failed, 'last_sync_ok': last_sync_ok, 'last_scrub': last_scrub}
+    # Query the whole table, not just the visible page, so old results are never lost.
+    def first(where='', params=()):
+        found = history(1, where, params)
+        return found[0] if found else None
+    marks = lambda values: ','.join('?' * len(values))
+    return {
+        'last': first(),
+        'last_failed': first(f'AND lower(status) NOT IN ({marks(NON_FAILURE_STATUSES)})', NON_FAILURE_STATUSES),
+        'last_sync_ok': first(f"AND kind='sync' AND lower(status) IN ({marks(OK_STATUSES)})", OK_STATUSES),
+        'last_scrub': first("AND kind='scrub'"),
+    }
 
 
 def run(cmd, timeout=20):
