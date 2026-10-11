@@ -78,10 +78,10 @@ class ReadOnlyTests(unittest.TestCase):
             'log': {'path': '/tmp/sync.log', 'updated': None,
                     'text': 'summary:error_io:0\\nsummary:exit:ok\\n', 'error': None}
         }
-        with patch.object(monitor, 'snapraid_observation', return_value=observation), \\
-             patch.object(monitor, 'run', side_effect=AssertionError('no commands allowed')), \\
-             patch.object(monitor, 'snapraid_last_sync', return_value=None), \\
-             patch.object(monitor, 'snapraid_config_summary', return_value={'data_disks': 30, 'parity_levels': 4}), \\
+        with patch.object(monitor, 'snapraid_observation', return_value=observation), \
+             patch.object(monitor, 'run', side_effect=AssertionError('no commands allowed')), \
+             patch.object(monitor, 'snapraid_last_sync', return_value=None), \
+             patch.object(monitor, 'snapraid_config_summary', return_value={'data_disks': 30, 'parity_levels': 4}), \
              patch.object(monitor, 'SNAPRAID_SNAPSHOT_PATH', '/tmp/no-such-snapraid-snapshot-98765.json'):
             result = monitor.snapraid_summary()
         self.assertEqual(result['protection'], 'Last log OK')
@@ -107,10 +107,10 @@ class ReadOnlyTests(unittest.TestCase):
                 'running': False, 'name': None, 'progress': None, 'processes': [],
                 'log': {'path': '', 'updated': None, 'text': '', 'error': None}
             }
-            with patch.object(monitor, 'SNAPRAID_SNAPSHOT_PATH', path), \\
-                 patch.object(monitor, 'snapraid_observation', return_value=observation), \\
-                 patch.object(monitor, 'snapraid_last_sync', return_value=None), \\
-                 patch.object(monitor, 'snapraid_config_summary', return_value={'data_disks': 0, 'parity_levels': 0}), \\
+            with patch.object(monitor, 'SNAPRAID_SNAPSHOT_PATH', path), \
+                 patch.object(monitor, 'snapraid_observation', return_value=observation), \
+                 patch.object(monitor, 'snapraid_last_sync', return_value=None), \
+                 patch.object(monitor, 'snapraid_config_summary', return_value={'data_disks': 0, 'parity_levels': 0}), \
                  patch.object(monitor, 'run', side_effect=AssertionError('must never run snapraid')):
                 result = monitor.snapraid_summary()
             self.assertEqual(result['scrub_coverage'], 4)
