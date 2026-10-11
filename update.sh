@@ -14,11 +14,8 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-echo "Removing old container..."
-docker rm -f vod-monitor 2>/dev/null || true
-
-echo "Removing old image..."
-docker image rm -f "$IMAGE" 2>/dev/null || true
+echo "Backing up local Compose configuration..."
+if [ -f docker-compose.yml ]; then cp -a docker-compose.yml "docker-compose.yml.bak-$(date +%Y%m%d-%H%M%S)"; fi
 
 echo "Downloading latest docker-compose.yml..."
 curl -fsSL "$COMPOSE_URL" -o docker-compose.yml
@@ -27,7 +24,7 @@ echo "Pulling latest image..."
 docker compose pull
 
 echo "Starting VOD Storage Monitor..."
-docker compose up -d
+docker compose up -d --no-deps vod-monitor
 
 echo
 echo "Update complete."
