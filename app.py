@@ -1,4 +1,4 @@
-import os, re, json, time, threading, subprocess, sqlite3
+import os, re, json, glob, hmac, time, threading, subprocess, sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import wraps
@@ -13,11 +13,69 @@ REFRESH_SECONDS = int(os.getenv('REFRESH_SECONDS', '60'))
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.5.0')
+# SnapRAID status/diff scan every data disk, so they run far less often than the dashboard refresh.
+SNAPRAID_CHECK_SECONDS = int(os.getenv('SNAPRAID_CHECK_SECONDS', '900'))
+SYNC_STALE_HOURS = float(os.getenv('SYNC_STALE_HOURS', '26'))
+SCRUB_STALE_DAYS = float(os.getenv('SCRUB_STALE_DAYS', '14'))
+APP_VERSION = os.getenv('APP_VERSION', '0.6.0')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
+def fmt_time(epoch):
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch).astimezone().strftime('%Y-%m-%d %H:%M')
+
+
+def fmt_duration(seconds):
+    if seconds is None:
+        return '-'
+    seconds = int(max(0, seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f'{days}d {hours}h'
+    if hours:
+        return f'{hours}h {minutes}m'
+    if minutes:
+        return f'{minutes}m'
+    return f'{secs}s'
+
+
+def fmt_age(epoch):
+    if epoch is None:
+        return None
+    return fmt_duration(time.time() - epoch) + ' ago'
+
+
+def parse_status(text):
+    """Extract the health facts SnapRAID prints in `snapraid status`."""
+    text = text or ''
+    info = {'scrub_oldest_days': None, 'scrub_median_days': None, 'scrub_newest_days': None,
+            'unscrubbed_pct': None, 'sync_in_progress': None, 'errors': None}
+    m = re.search(r'oldest block was scrubbed (\d+) days? ago, the median (\d+), the newest (\d+)', text)
+    if m:
+        info['scrub_oldest_days'], info['scrub_median_days'], info['scrub_newest_days'] = map(int, m.groups())
+    m = re.search(r'(\d+)% of the array is not scrubbed', text)
+    if m:
+        info['unscrubbed_pct'] = int(m.group(1))
+    elif 'full array was scrubbed' in text:
+        info['unscrubbed_pct'] = 0
+    m = re.search(r'sync in progress at (\d+)%', text)
+    if m:
+        info['sync_in_progress'] = int(m.group(1))
+    elif 'No sync is in progress' in text:
+        info['sync_in_progress'] = False
+    m = re.search(r'there (?:are|is) (\d+) errors?', text)
+    if m:
+        info['errors'] = int(m.group(1))
+    elif 'No error detected' in text:
+        info['errors'] = 0
+    return info
+
+
 def empty_dashboard():
     return {
         'storage': {
@@ -30,23 +88,51 @@ def empty_dashboard():
             'status_raw':'','diff_raw':'',
             'changes':{'equal':0,'added':0,'removed':0,'updated':0,'moved':0,'copied':0,'restored':0},
             'pending_total':0,'protection':'Initializing','warnings':[],'last_sync':None,
-            'config':{'data_disks':0,'parity_levels':0,'content_copies':0,'parity_paths':[]}
+            'config':{'data_disks':0,'parity_levels':0,'content_copies':0,'parity_paths':[]},
+            'health':parse_status(''),'checked':None,'maintenance_running':False,
+            'job':{'name':None,'progress':None}
         },
         'disks': [],
         'docker': {'enabled':ENABLE_DOCKER,'containers':[]},
         'hostname': (Path('/host/etc/hostname').read_text().strip() if Path('/host/etc/hostname').exists() else os.uname().nodename),
         'app_version': APP_VERSION,
         'build_sha': BUILD_SHA[:7] if BUILD_SHA else 'dev',
-        'disk_health': {'total':0,'healthy':0,'failed':0,'warning':0,'max_temp':None}
+        'disk_health': {'total':0,'healthy':0,'failed':0,'warning':0,'other':0,'standby':0,'max_temp':None}
     }
 
-cache = {'data': empty_dashboard(), 'updated': None, 'collecting': False}
+cache = {'data': empty_dashboard(), 'updated': None, 'collecting': False, 'snapraid_checked': 0}
 lock = threading.Lock()
 # This application NEVER launches maintenance jobs. Host processes and logs are observed
-# through read-only mounts, including jobs started via SSH or systemd.
+# through read-only mounts, including jobs started via SSH, cron or systemd.
+SNAPRAID_OPERATIONS = ('sync', 'scrub', 'check', 'fix', 'status', 'diff', 'touch', 'list', 'dup', 'smart')
+
+
+def host_boot_time():
+    try:
+        for line in Path('/host/proc/stat').read_text().splitlines():
+            if line.startswith('btime '):
+                return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def process_start_time(entry, boot):
+    """Wall-clock start time of a host process, from /proc/<pid>/stat."""
+    if boot is None:
+        return None
+    try:
+        stat = (entry / 'stat').read_text()
+        ticks = int(stat.rsplit(')', 1)[1].split()[19])
+        return boot + ticks / os.sysconf('SC_CLK_TCK')
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def snapraid_processes():
     processes = []
     proc = Path('/host/proc')
+    boot = host_boot_time()
     try:
         own_pidns = os.readlink('/proc/self/ns/pid')
     except OSError:
@@ -64,10 +150,11 @@ def snapraid_processes():
                         (entry / 'cmdline').read_bytes().split(b'\0') if p]
                 if not argv or Path(argv[0]).name != 'snapraid':
                     continue
-                operation = next((a for a in reversed(argv)
-                                  if a in ('sync','scrub','check','fix','status','diff','touch','list')),
-                                 'snapraid')
-                processes.append({'pid': int(entry.name), 'name': operation})
+                operation = next((a for a in reversed(argv) if a in SNAPRAID_OPERATIONS), 'snapraid')
+                started = process_start_time(entry, boot)
+                processes.append({'pid': int(entry.name), 'name': operation, 'started': started,
+                                  'started_display': fmt_time(started),
+                                  'elapsed': fmt_duration(time.time() - started) if started else None})
             except (OSError, ValueError):
                 continue
     except OSError:
@@ -75,10 +162,19 @@ def snapraid_processes():
     return sorted(processes, key=lambda p: p['pid'])
 
 
-def read_snapraid_log():
+def snapraid_log_file():
+    """SNAPRAID_LOG_PATH may be a glob (e.g. /docker/snapraid/logs/*.log); use the newest match."""
     path = SNAPRAID_LOG_PATH
+    if path and glob.has_magic(path):
+        matches = [m for m in glob.glob(path) if os.path.isfile(m)]
+        return max(matches, key=os.path.getmtime) if matches else path
+    return path
+
+
+def read_snapraid_log():
+    path = snapraid_log_file()
     if not path:
-        return {'path': '', 'updated': None, 'text': '',
+        return {'path': '', 'updated': None, 'mtime': None, 'text': '',
                 'error': 'Set SNAPRAID_LOG_PATH to an existing, mounted log file.'}
     try:
         with open(path, 'rb') as stream:
@@ -89,27 +185,145 @@ def read_snapraid_log():
         if total > 98304 and '\n' in chunk:
             chunk = chunk.split('\n', 1)[1]
         text = '\n'.join(chunk.splitlines()[-220:])
-        updated = datetime.fromtimestamp(Path(path).stat().st_mtime).astimezone().isoformat()
-        return {'path': path, 'updated': updated, 'text': text, 'error': None}
+        mtime = Path(path).stat().st_mtime
+        return {'path': path, 'updated': fmt_time(mtime), 'mtime': mtime, 'text': text, 'error': None}
     except OSError as exc:
-        return {'path': path, 'updated': None, 'text': '',
+        return {'path': path, 'updated': None, 'mtime': None, 'text': '',
                 'error': f'Log unavailable: {exc.strerror or str(exc)}'}
+
+
+def log_result(text):
+    """Outcome of the run recorded in a SnapRAID log (-l log or captured console output)."""
+    text = text or ''
+    errors = {}
+    for kind in ('error_file', 'error_io', 'error_data'):
+        found = re.findall(r'^summary:' + kind + r':(\d+)', text, re.M)
+        if found:
+            errors[kind] = int(found[-1])
+    exits = re.findall(r'^summary:exit:(\w+)', text, re.M)
+    if exits and exits[-1] in ('ok', 'warning', 'error'):
+        result = {'ok': 'OK', 'warning': 'Warning', 'error': 'Error'}[exits[-1]]
+    elif any(errors.values()) or re.search(r'^DANGER!|^\d+ (?:file|io|data) errors?', text, re.M | re.I):
+        result = 'Error'
+    elif re.search(r'^Everything OK|^Nothing to do|^No error detected', text, re.M):
+        result = 'OK'
+    elif re.search(r'^WARNING!', text, re.M):
+        result = 'Warning'
+    else:
+        result = None
+    detail = ', '.join(f"{k.split('_', 1)[1]} errors: {v}" for k, v in errors.items() if v) or None
+    return {'result': result, 'detail': detail}
+
+
+def latest_progress(text):
+    # SnapRAID's -l structured logs may have no percentage; do not invent one.
+    for line in reversed((text or '').splitlines()):
+        m = re.search(r'(?<!\d)(\d{1,3})%\s*,\s*([0-9.]+)\s*(MB|GB|TB)', line, re.I)
+        if m:
+            return {'percent': min(100, int(m.group(1))), 'processed': f'{m.group(2)} {m.group(3).upper()}'}
+    return None
 
 
 def snapraid_observation():
     processes = snapraid_processes()
     log = read_snapraid_log()
-    progress = None
-    # SnapRAID's -l structured logs may have no percentage; do not invent one.
-    for line in reversed(log['text'].splitlines()):
-        m = re.search(r'(?<!\d)(\d{1,3})%\s*,\s*([0-9.]+)\s*(MB|GB|TB)', line, re.I)
-        if m:
-            progress = {'percent': min(100, int(m.group(1))),
-                        'processed': f'{m.group(2)} {m.group(3).upper()}'}
-            break
+    progress = latest_progress(log['text']) if processes else None
+    outcome = log_result(log['text'])
     return {'running': bool(processes), 'processes': processes,
             'name': processes[0]['name'] if processes else None,
-            'progress': progress if processes else None, 'log': log}
+            'started': processes[0].get('started_display') if processes else None,
+            'elapsed': processes[0].get('elapsed') if processes else None,
+            'progress': progress,
+            'log': {'path': log['path'], 'updated': log['updated'], 'mtime': log['mtime'],
+                    'error': log['error'], 'result': outcome['result'], 'detail': outcome['detail']},
+            'last_run': last_run_summary()}
+
+
+# Operations that are worth keeping in the run history (status/diff/list are just queries).
+TRACKED_OPERATIONS = ('sync', 'scrub', 'check', 'fix', 'touch', 'snapraid')
+
+
+def watch_jobs_once():
+    """Record start/end/result of host SnapRAID jobs into the history table."""
+    c = db()
+    try:
+        row = c.execute("SELECT value FROM settings WHERE key='active_jobs'").fetchone()
+        active = json.loads(row[0]) if row else {}
+    except (ValueError, sqlite3.Error):
+        active = {}
+    current = {}
+    for p in snapraid_processes():
+        if p['name'] in TRACKED_OPERATIONS:
+            started = p.get('started')
+            current[f"{p['pid']}:{int(started or 0)}"] = {'name': p['name'], 'started': started}
+    finished = [job for key, job in active.items() if key not in current]
+    if finished:
+        log = read_snapraid_log()
+        for job in finished:
+            started = job.get('started') or time.time()
+            outcome = {'result': None, 'detail': None}
+            # Only trust the log if it was written during this run.
+            if log['mtime'] and log['mtime'] >= started - 5:
+                outcome = log_result(log['text'])
+            status = outcome['result'] or 'Finished'
+            message = outcome['detail'] or ('Result from ' + log['path'] if outcome['result']
+                                            else 'Process ended; no result found in the log')
+            c.execute('INSERT INTO events(ts,kind,status,message,duration) VALUES(?,?,?,?,?)',
+                      (datetime.fromtimestamp(started, timezone.utc).isoformat(), job['name'], status,
+                       message, time.time() - started))
+        # Refresh status/diff as soon as a job finishes.
+        cache['snapraid_checked'] = 0
+    if finished or set(active) != set(current):
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('active_jobs',?)", (json.dumps(current),))
+    c.commit()
+    c.close()
+
+
+def job_watch_loop():
+    while True:
+        try:
+            watch_jobs_once()
+        except Exception:
+            pass
+        time.sleep(10)
+
+
+def history(limit=20):
+    c = db()
+    rows = c.execute('SELECT ts,kind,status,message,duration FROM events ORDER BY ts DESC, id DESC LIMIT ?',
+                     (limit,)).fetchall()
+    c.close()
+    events = []
+    for ts, kind, status, message, duration in rows:
+        try:
+            start = datetime.fromisoformat(ts).timestamp()
+        except ValueError:
+            start = None
+        end = start + (duration or 0) if start is not None else None
+        events.append({'kind': kind, 'status': status, 'message': message,
+                       'started': fmt_time(start) or ts, 'ended': fmt_time(end),
+                       'ended_epoch': end, 'ended_age': fmt_age(end),
+                       'duration': fmt_duration(duration) if duration else '-',
+                       'level': status_level(status)})
+    return events
+
+
+def status_level(status):
+    s = (status or '').lower()
+    if s in ('ok', 'success', 'succeeded', 'completed'):
+        return 'ok'
+    if s in ('warning', 'finished', 'unknown', 'cancelled'):
+        return 'warn'
+    return 'bad'
+
+
+def last_run_summary():
+    events = history(50)
+    last = events[0] if events else None
+    last_failed = next((e for e in events if e['level'] == 'bad'), None)
+    last_sync_ok = next((e for e in events if e['kind'] == 'sync' and e['level'] == 'ok'), None)
+    last_scrub = next((e for e in events if e['kind'] == 'scrub'), None)
+    return {'last': last, 'last_failed': last_failed, 'last_sync_ok': last_sync_ok, 'last_scrub': last_scrub}
 
 
 def run(cmd, timeout=20):
@@ -151,6 +365,7 @@ def start_background_threads():
             return
         background_started = True
         threading.Thread(target=collector_loop,daemon=True,name='collector').start()
+        threading.Thread(target=job_watch_loop,daemon=True,name='job-watch').start()
 
 
 def auth_required(fn):
@@ -190,7 +405,10 @@ def parse_mdstat():
         m=re.match(r'(md\d+)\s*:\s*(\w+)\s+(\w+)\s+(.+)', b)
         if not m: continue
         name,state,level,members=m.groups()
-        healthy='[UU]' in b or ('[U' in b and '_' not in b)
+        member_map=re.search(r'\[([U_]+)\]', b)
+        healthy=('_' not in member_map.group(1)) if member_map else state=='active'
+        if state!='active' or '(F)' in b:
+            healthy=False
         progress=None
         pm=re.search(r'(resync|recovery|reshape|check)\s*=\s*([0-9.]+)%', b)
         if pm: progress={'type':pm.group(1),'percent':float(pm.group(2))}
@@ -229,55 +447,76 @@ def snapraid_config_summary():
 
 
 def snapraid_last_sync():
-    mtimes=[]
-    for p in snapraid_content_paths():
-        try: mtimes.append(Path(p).stat().st_mtime)
-        except: pass
-    if not mtimes: return None
-    ts=max(mtimes)
-    return {'epoch':ts,'iso':datetime.fromtimestamp(ts).astimezone().isoformat(),
-            'display':datetime.fromtimestamp(ts).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}
+    # Prefer a sync this monitor saw finish successfully. The content file mtime is only a
+    # fallback: scrub, fix and touch rewrite it too, and sync saves it periodically mid-run.
+    synced = last_run_summary().get('last_sync_ok')
+    if synced and synced.get('ended_epoch'):
+        ts, source = synced['ended_epoch'], 'run history'
+    else:
+        mtimes = []
+        for p in snapraid_content_paths():
+            try: mtimes.append(Path(p).stat().st_mtime)
+            except OSError: pass
+        if not mtimes: return None
+        ts, source = max(mtimes), 'content file'
+    age_hours = (time.time() - ts) / 3600
+    return {'epoch': ts, 'iso': datetime.fromtimestamp(ts).astimezone().isoformat(),
+            'display': fmt_time(ts), 'age': fmt_age(ts), 'source': source,
+            'stale': age_hours > SYNC_STALE_HOURS}
 
 
 def snapraid_summary():
     observation = snapraid_observation()
     running = observation['running']
     previous = cache.get('data', {}).get('snapraid', {})
+    due = time.time() - cache.get('snapraid_checked', 0) >= SNAPRAID_CHECK_SECONDS
 
-    if running:
-        # An externally managed SnapRAID operation owns the content lock.
-        # Don't run status/diff during maintenance or misreport lock errors as failures.
-        rc = None
-        rc2 = None
+    if running or not due:
+        # While an externally managed SnapRAID operation owns the content lock, don't run
+        # status/diff or misreport lock errors as failures. Between checks, reuse the last result.
+        rc = previous.get('status_rc')
+        rc2 = previous.get('diff_rc')
         status = previous.get('status_raw', '')
-        diff = previous.get('diff_raw', '')
-        status_ok = None
-        diff_ok = None
+        status_ok = None if running else previous.get('status_ok')
+        diff_ok = None if running else previous.get('diff_ok')
         pending = dict(previous.get('changes', {}))
+        diff_warnings = previous.get('diff_warnings', [])
+        checked = previous.get('checked')
     else:
-        rc, status = run(['snapraid', '-c', SNAPRAID_CONFIG, 'status'], timeout=60)
+        rc, status = run(['snapraid', '-c', SNAPRAID_CONFIG, 'status'], timeout=180)
         status_ok = (rc == 0 and bool(status.strip()))
-        rc2, diff = run(['snapraid', '-c', SNAPRAID_CONFIG, 'diff'], timeout=120)
+        rc2, diff = run(['snapraid', '-c', SNAPRAID_CONFIG, 'diff'], timeout=600)
         diff_ok = (rc2 in (0, 2) and bool(diff.strip()))
         pending = {}
         for key in ['equal', 'added', 'removed', 'updated', 'moved', 'copied', 'restored']:
             match = re.search(r'^\s*([0-9]+)\s+' + re.escape(key) + r'\s*$', diff, re.M) if diff else None
             pending[key] = int(match.group(1)) if match else 0
+        # diff lists every changed file; keep only its warnings, not the whole output.
+        diff_warnings = [l.strip() for l in diff.splitlines() if 'WARNING!' in l]
+        cache['snapraid_checked'] = time.time()
+        checked = fmt_time(cache['snapraid_checked'])
 
-    warning_source = status + ('\n' + diff if diff else '')
     hidden_warning = "WARNING! For 30 disks, it's recommended to use five parity levels."
     warnings = list(dict.fromkeys(
-        line.strip() for line in warning_source.splitlines()
-        if 'WARNING!' in line and line.strip() != hidden_warning
+        line for line in [l.strip() for l in status.splitlines() if 'WARNING!' in l] + diff_warnings
+        if line != hidden_warning
     ))
     pending_total = sum(value for key, value in pending.items() if key != 'equal')
+    health = parse_status(status)
+    last_sync = snapraid_last_sync()
 
     if running:
         name = observation['name']
         protection = {'sync':'Syncing', 'scrub':'Scrubbing', 'fix':'Repair in progress',
                       'check':'Checking'}.get(name, 'SnapRAID busy')
+    elif status_ok is None:
+        protection = 'Initializing'
     elif not status_ok:
         protection = 'Unavailable'
+    elif health['errors']:
+        protection = 'Errors detected'
+    elif health['sync_in_progress']:
+        protection = 'Sync interrupted'
     elif diff_ok is False:
         protection = 'Status OK / Diff unavailable'
     elif pending_total == 0:
@@ -285,21 +524,29 @@ def snapraid_summary():
     else:
         protection = 'Changes Pending'
 
+    scrub_stale = (health['scrub_newest_days'] is not None and health['scrub_newest_days'] > SCRUB_STALE_DAYS)
+
     return {
         'status_rc': rc, 'diff_rc': rc2, 'status_ok': status_ok,
-        'diff_ok': diff_ok, 'status_raw': status, 'diff_raw': diff,
+        'diff_ok': diff_ok, 'status_raw': status, 'diff_warnings': diff_warnings,
         'changes': pending, 'pending_total': pending_total,
-        'protection': protection, 'warnings': warnings,
-        'last_sync': snapraid_last_sync(), 'config': snapraid_config_summary(),
+        'protection': protection, 'warnings': warnings, 'health': health,
+        'scrub_stale': scrub_stale, 'checked': checked,
+        'last_sync': last_sync, 'config': snapraid_config_summary(),
         'maintenance_running': running,
-        'job': {'name': observation['name'], 'progress': observation['progress']}
+        'job': {'name': observation['name'], 'progress': observation['progress'],
+                'started': observation['started'], 'elapsed': observation['elapsed'],
+                'pids': [p['pid'] for p in observation['processes']]},
+        'last_run': observation['last_run'],
     }
 
 
 def smart_for_disk(d):
     name=d['name']; dev='/dev/'+name
-    smart={'health':'Unknown','health_detail':None,'temp':None,'power_hours':None,'reallocated':None,'pending':None,'error':None}
-    rc2,sout=run(['smartctl','-x','-j',dev],timeout=25)
+    smart={'health':'Unknown','health_detail':None,'temp':None,'power_hours':None,'reallocated':None,
+           'pending':None,'uncorrectable':None,'error':None,'standby':False,'checked':fmt_time(time.time())}
+    # -n standby: never spin up a sleeping disk just to read SMART.
+    rc2,sout=run(['smartctl','-x','-j','-n','standby',dev],timeout=25)
     smart_serial=''
     j=None
     try:
@@ -308,13 +555,26 @@ def smart_for_disk(d):
         j=None
 
     if (not j or not j.get('device')) and name.startswith('sd'):
-        rc3,sout3=run(['smartctl','-x','-j','-d','scsi',dev],timeout=25)
+        rc3,sout3=run(['smartctl','-x','-j','-n','standby','-d','scsi',dev],timeout=25)
         try:
             j3=json.loads(sout3)
             if j3.get('device'):
                 j=j3; rc2=rc3; sout=sout3
         except Exception:
             pass
+
+    msgs_text=' '.join(str(m.get('string','')) for m in ((j or {}).get('smartctl',{}).get('messages') or []))
+    if re.search(r'STANDBY|SLEEP', msgs_text + (sout if not j else ''), re.I):
+        # Keep the last reading taken while the disk was awake.
+        prev=next((x for x in cache.get('data',{}).get('disks',[]) if x.get('name')==name), None)
+        if prev:
+            smart=dict(prev['smart'])
+        else:
+            smart['health']='Standby'
+        smart['standby']=True
+        return {'name':name,'dev':dev,'size':int(d.get('size') or 0),'size_h':human_bytes(d.get('size') or 0),
+                'model':(d.get('model') or '').strip(),'serial':(d.get('serial') or '').strip() or (prev or {}).get('serial',''),
+                'smart':smart}
 
     try:
         if not j:
@@ -385,8 +645,14 @@ def smart_for_disk(d):
         amap={a.get('name'):a.get('raw',{}).get('value') for a in attrs}
         smart['reallocated']=amap.get('Reallocated_Sector_Ct')
         smart['pending']=amap.get('Current_Pending_Sector')
+        smart['uncorrectable']=amap.get('Offline_Uncorrectable')
         if smart['reallocated'] is None:
             smart['reallocated']=j.get('scsi_grown_defect_list')
+        # SMART "PASSED" only checks vendor thresholds; pending/uncorrectable sectors are
+        # the usual early sign of a failing HDD, so surface them.
+        if smart['health']=='Healthy' and ((smart['pending'] or 0) > 0 or (smart['uncorrectable'] or 0) > 0):
+            smart['health']='Warning'
+            smart['health_detail']=f"{smart['pending'] or 0} pending, {smart['uncorrectable'] or 0} uncorrectable sector(s)"
 
         msgs=j.get('smartctl',{}).get('messages',[])
         if msgs:
@@ -527,9 +793,12 @@ def collect(force=False):
             'healthy':sum(1 for d in data['disks'] if d['smart']['health']=='Healthy'),
             'failed':sum(1 for d in data['disks'] if d['smart']['health'] in ('FAILED','Critical')),
             'warning':sum(1 for d in data['disks'] if d['smart']['health'] in ('Warning','Temp Warning')),
+            'standby':sum(1 for d in data['disks'] if d['smart'].get('standby')),
             'max_temp':max([d['smart']['temp'] for d in data['disks'] if d['smart']['temp'] is not None] or [None])
         }
-        cache['data']=data; cache['updated']=datetime.now().astimezone().isoformat()
+        h=data['disk_health']
+        h['other']=h['total']-h['healthy']-h['failed']-h['warning']
+        cache['data']=data; cache['updated']=fmt_time(time.time())
         return True
     finally:
         cache['collecting']=False
@@ -542,8 +811,12 @@ def collector_loop():
 @app.route('/login',methods=['GET','POST'])
 def login():
     if request.method=='POST':
-        if request.form.get('password')==ADMIN_PASSWORD:
-            session['auth']=True; return redirect(request.args.get('next') or url_for('index'))
+        if hmac.compare_digest(request.form.get('password','').encode(), ADMIN_PASSWORD.encode()):
+            session['auth']=True
+            target=request.args.get('next') or ''
+            if not target.startswith('/') or target.startswith('//'):
+                target=url_for('index')
+            return redirect(target)
         flash('Invalid password','error')
     return render_template('login.html')
 
@@ -557,8 +830,9 @@ def index():
     if not cache.get('updated') and not cache.get('collecting'):
         threading.Thread(target=collect,daemon=True).start()
     data=cache.get('data') or empty_dashboard()
-    c=db(); events=c.execute('SELECT ts,kind,status,message,duration FROM events ORDER BY id DESC LIMIT 20').fetchall(); c.close()
-    return render_template('index.html', data=data, updated=cache['updated'] or 'initializing', events=events)
+    return render_template('index.html', data=data, updated=cache['updated'] or 'initializing',
+                           events=history(20), last_run=last_run_summary(), stale_hours=SYNC_STALE_HOURS,
+                           check_minutes=max(1, SNAPRAID_CHECK_SECONDS // 60))
 
 @app.route('/api/status')
 @auth_required
