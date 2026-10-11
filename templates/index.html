@@ -13,7 +13,7 @@
 <section class="grid hero">
 <div class="card"><span>VOD Pool</span><strong>{{data.storage.vod.size_h}}</strong><small>{{data.storage.vod.used_h}} used · {{data.storage.vod.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.vod.pct}}%"></i></div><b>{{data.storage.vod.pct}}%</b></div>
 <div class="card"><span>Docker RAID</span><strong>{{data.storage.docker.size_h}}</strong><small>{{data.storage.docker.used_h}} used · {{data.storage.docker.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.docker.pct}}%"></i></div><b>{{data.storage.docker.pct}}%</b></div>
-<div class="card"><span>SnapRAID</span><strong id="snapHeroProtection">{{data.snapraid.protection}}</strong><small>Last sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small><b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total}} pending change(s){% else %}Diff unavailable{% endif %}</b></div>
+<div class="card"><span>SnapRAID</span><strong id="snapHeroProtection">{{data.snapraid.protection}}</strong><small>Last sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small><b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}} pending change(s){% else %}Diff unavailable{% endif %}</b></div>
 <div class="card"><span>Disk Health</span><strong>{{data.disk_health.healthy}} / {{data.disk_health.total}}</strong><small>{{data.disk_health.warning}} warning · {{data.disk_health.failed}} failed</small><b>Max temp: {{data.disk_health.max_temp if data.disk_health.max_temp is not none else '-'}}°C</b></div>
 </section>
 
@@ -21,36 +21,37 @@
 <div class="panel snap-panel">
   <div class="panel-title">
     <div><h2>SnapRAID</h2><span class="subtle">{{data.snapraid.config.data_disks}} data · {{data.snapraid.config.parity_levels}} parity · {{data.snapraid.config.content_copies}} content copies</span></div>
-    <span id="snapProtectionPill" class="pill {{'ok' if data.snapraid.protection=='Protected' else ('warn' if data.snapraid.protection in ['Changes Pending','Syncing','Scrubbing','Repair in progress','Checking','SnapRAID busy'] else 'bad')}}">{{data.snapraid.protection}}</span>
+    <span id="snapProtectionPill" class="pill {{'warn' if data.snapraid.maintenance_running or data.snapraid.protection=='Last log OK' else 'bad'}}">{{data.snapraid.protection}}</span>
   </div>
 
   <div class="kv">
-    <span>Added</span><b id="snapAdded">{{data.snapraid.changes.added}}</b>
-    <span>Updated</span><b id="snapUpdated">{{data.snapraid.changes.updated}}</b>
-    <span>Removed</span><b id="snapRemoved">{{data.snapraid.changes.removed}}</b>
-    <span>Moved</span><b id="snapMoved">{{data.snapraid.changes.moved}}</b>
+    <span>Added</span><b id="snapAdded">{{data.snapraid.changes.added if data.snapraid.changes.added is not none else 'Unknown'}}</b>
+    <span>Updated</span><b id="snapUpdated">{{data.snapraid.changes.updated if data.snapraid.changes.updated is not none else 'Unknown'}}</b>
+    <span>Removed</span><b id="snapRemoved">{{data.snapraid.changes.removed if data.snapraid.changes.removed is not none else 'Unknown'}}</b>
+    <span>Moved</span><b id="snapMoved">{{data.snapraid.changes.moved if data.snapraid.changes.moved is not none else 'Unknown'}}</b>
   </div>
 
   <div class="snap-meta">
     <div><span>Last sync</span><b id="snapLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</b></div>
-    <div><span>Pending changes</span><b id="snapPending">{% if data.snapraid.maintenance_running %}Updating{% else %}{{data.snapraid.pending_total}}{% endif %}</b></div>
-    <div><span>Status</span><b id="snapStatus">{{'Paused' if data.snapraid.maintenance_running else ('OK' if data.snapraid.status_ok else 'Failed')}}</b></div>
-    <div><span>Diff</span><b id="snapDiff">{% if data.snapraid.maintenance_running %}Paused during {{data.snapraid.job.name}}{% else %}{{'OK' if data.snapraid.diff_ok else 'Failed'}}{% endif %}</b></div>
+    <div><span>Pending changes</span><b id="snapPending">{% if data.snapraid.maintenance_running %}Updating{% else %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}}{% endif %}</b></div>
+    <div><span>Status</span><b id="snapStatus">{{'Snapshot OK' if data.snapraid.status_ok is sameas true else ('Snapshot error' if data.snapraid.status_ok is sameas false else 'Not collected')}}</b></div>
+    <div><span>Diff</span><b id="snapDiff">{% if data.snapraid.maintenance_running %}Paused during {{data.snapraid.job.name}}{% else %}{{'Snapshot OK' if data.snapraid.diff_ok is sameas true else ('Snapshot error' if data.snapraid.diff_ok is sameas false else 'Not collected')}}{% endif %}</b></div>
   </div>
 
-  <div class="info-note">Monitoring only · SnapRAID maintenance runs outside this dashboard. No Sync, Scrub, Cancel or scheduling controls are available.</div>
+  <div class="info-note">Lock-free monitoring: the dashboard never runs SnapRAID commands. Status and diff are optional host-captured snapshots, not live checks. Snapshot: <b id="snapSnapshotTime">{{data.snapraid.snapshot_time or "Not collected"}}</b>. Scrub verified: <b id="snapScrubCoverage">{{(data.snapraid.scrub_coverage|string + "%") if data.snapraid.scrub_coverage is not none else "Unknown"}}</b>. Last sync log result: <b id="snapLastLogResult">{{data.snapraid.last_log_result}}</b>. Values may be stale.</div>
   <div class="job-box" aria-live="polite">
     <div class="job-head"><b id="jobTitle">Checking SnapRAID process…</b><span id="jobElapsed">Read-only</span></div>
     <div class="subtle">Log file: <span id="snapLogPath">Loading…</span> · Last modified: <span id="snapLogUpdated">-</span></div>
     <pre id="jobOutput">Loading SnapRAID log…</pre>
   </div>
 
-  {% if data.snapraid.status_ok is sameas false %}<div class="warning">SnapRAID status command failed (exit {{data.snapraid.status_rc}}). Check Raw status below.</div>{% endif %}
-  {% if data.snapraid.diff_ok is sameas false %}<div class="warning">SnapRAID diff command failed (exit {{data.snapraid.diff_rc}}).</div>{% endif %}
+  {% if data.snapraid.status_ok is sameas false %}<div class="warning">Saved SnapRAID status snapshot reports exit {{data.snapraid.status_rc}}.</div>{% endif %}
+  {% if data.snapraid.diff_ok is sameas false %}<div class="warning">Saved SnapRAID diff snapshot reports exit {{data.snapraid.diff_rc}}.</div>{% endif %}
+  {% if data.snapraid.snapshot_error %}<div class="warning">Snapshot could not be read: {{data.snapraid.snapshot_error}}</div>{% endif %}
   {% if data.snapraid.warnings %}<div class="warning">{{data.snapraid.warnings|join(' · ')}}</div>{% endif %}
   <details><summary>Parity paths</summary><pre>{{data.snapraid.config.parity_paths|join('\n') if data.snapraid.config.parity_paths else 'No parity paths detected'}}</pre></details>
-  <details><summary>Raw status</summary><pre id="snapRawStatus">{{data.snapraid.status_raw or 'No output returned'}}</pre></details>
-  <details><summary>Raw diff</summary><pre id="snapRawDiff">{{data.snapraid.diff_raw or 'No output returned'}}</pre></details>
+  <details><summary>Raw status</summary><pre id="snapRawStatus">{{data.snapraid.status_raw or 'No host snapshot collected. Dashboard does not execute SnapRAID.'}}</pre></details>
+  <details><summary>Raw diff</summary><pre id="snapRawDiff">{{data.snapraid.diff_raw or 'No host snapshot collected. Dashboard does not execute SnapRAID.'}}</pre></details>
 </div></section>
 
 <section class="panel">
@@ -148,13 +149,16 @@ async function refreshStatus(){
     if(j.snapraid){
       const s=j.snapraid;
       const set=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
-      set('snapAdded', s.changes?.added ?? 0);
-      set('snapUpdated', s.changes?.updated ?? 0);
-      set('snapRemoved', s.changes?.removed ?? 0);
-      set('snapMoved', s.changes?.moved ?? 0);
-      set('snapPending', s.maintenance_running ? 'Updating' : (s.pending_total ?? 0));
-      set('snapStatus', s.maintenance_running ? 'Paused' : (s.status_ok ? 'OK' : 'Failed'));
-      set('snapDiff', s.maintenance_running ? ('Paused during '+(s.job?.name||'maintenance')) : (s.diff_ok ? 'OK' : 'Failed'));
+      set('snapAdded', s.changes?.added ?? 'Unknown');
+      set('snapUpdated', s.changes?.updated ?? 'Unknown');
+      set('snapRemoved', s.changes?.removed ?? 'Unknown');
+      set('snapMoved', s.changes?.moved ?? 'Unknown');
+      set('snapPending', s.maintenance_running ? 'Updating' : (s.pending_total ?? 'Unknown'));
+      set('snapSnapshotTime', s.snapshot_time || 'Not collected');
+      set('snapScrubCoverage', s.scrub_coverage == null ? 'Unknown' : s.scrub_coverage + '%');
+      set('snapLastLogResult', s.last_log_result || 'Unknown');
+      set('snapStatus', s.status_ok === true ? 'Snapshot OK' : (s.status_ok === false ? 'Snapshot error' : 'Not collected'));
+      set('snapDiff', s.diff_ok === true ? 'Snapshot OK' : (s.diff_ok === false ? 'Snapshot error' : 'Not collected'));
       const lastSync=s.last_sync?.display || 'Unknown';
       set('snapLastSync', lastSync);
       set('snapHeroLastSync', lastSync);
@@ -162,20 +166,20 @@ async function refreshStatus(){
 
       const heroPending = s.maintenance_running
         ? (s.job?.progress ? (s.job.progress.percent+'% · '+s.job.progress.processed+' processed') : 'Maintenance job running')
-        : (s.diff_ok ? ((s.pending_total ?? 0)+' pending change(s)') : 'Diff unavailable');
+        : (s.diff_ok ? ((s.pending_total ?? 'Unknown')+' pending change(s)') : 'Diff unavailable');
       set('snapHeroPending', heroPending);
 
       const pill=document.getElementById('snapProtectionPill');
       if(pill){
         pill.textContent=s.protection||'Unknown';
         pill.classList.remove('ok','warn','bad');
-        if(s.protection==='Protected') pill.classList.add('ok');
+        if(s.protection==='Last log OK') pill.classList.add('warn');
         else if(['Changes Pending','Syncing','Scrubbing','Repair in progress','Checking','SnapRAID busy'].includes(s.protection)) pill.classList.add('warn');
         else pill.classList.add('bad');
       }
 
-      set('snapRawStatus', s.status_raw || 'No output returned');
-      set('snapRawDiff', s.diff_raw || 'No output returned');
+      set('snapRawStatus', s.status_raw || 'No host snapshot collected. Dashboard does not execute SnapRAID.');
+      set('snapRawDiff', s.diff_raw || 'No host snapshot collected. Dashboard does not execute SnapRAID.');
     }
   }catch(e){}
 }
