@@ -15,7 +15,7 @@ REFRESH_SECONDS = int(os.getenv('REFRESH_SECONDS', '60'))
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.5.0')
+APP_VERSION = os.getenv('APP_VERSION', '0.5.1')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
