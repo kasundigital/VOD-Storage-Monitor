@@ -7,11 +7,15 @@ Monitor mergerfs capacity, mdadm RAID arrays, HDD/NVMe SMART health, and externa
 ## What it shows
 
 - VOD and Docker storage utilization, mdadm array state and progress, and SMART health/temperatures
-- Running SnapRAID jobs detected from host `/proc`, plus external log tail and progress if present
+- Running SnapRAID jobs detected from host `/proc`, with start time, elapsed time and progress if the log has it
+- **Last run** (operation, OK / Warning / Error, when it ended, how long it took) and **last failure**
+- **Last sync** age, highlighted when older than `SYNC_STALE_HOURS` (default 26h)
 - Last existing sync log outcome (`summary:exit:ok` means **the observed log** ended OK)
+- From the host snapshot: scrub age (newest/oldest block), % never scrubbed, array errors and interrupted syncs (highlighted when the newest scrub is older than `SCRUB_STALE_DAYS`, default 14)
+- SMART reallocated/pending/uncorrectable sectors; sleeping disks are not woken up (`smartctl -n standby`)
 - SnapRAID disk/parity/content configuration parsed from the mounted configuration
 - Optional **host-captured** SnapRAID status/diff snapshot with capture time and scrub coverage
-- Historical maintenance records, optional Docker listing, responsive authenticated UI
+- **Run history** of host jobs, optional Docker listing, responsive authenticated UI
 
 **Important accuracy rule:** The monitor does not call a historical sync log a live health check. It displays `Last log OK` instead of `Protected`. Without a snapshot, pending changes, status, diff and scrub coverage display **Unknown / Not collected**, never zero or failed. A snapshot is a point-in-time reading, not continuously verified protection.
 
@@ -52,6 +56,17 @@ The script checks for a running SnapRAID process, runs `snapraid status` then `s
 The dashboard reads this JSON file through `/docker:/docker:ro`. The snapshot timestamp is displayed prominently. Snapshot data becomes historical as soon as files change; no live pending-change guarantee is implied. If no snapshot exists, the monitor still provides full disk, RAID, process, and log monitoring.
 
 For a running scrub, you can keep the monitor online throughout the operation: it does not acquire a SnapRAID lock.
+
+## Run history (last run / failures)
+
+A background watcher looks for `snapraid` processes on the host every 10 seconds (via `/proc:/host/proc:ro`). It only reads `/proc`; it never runs SnapRAID. When a sync, scrub, check, fix or touch ends, it records start time, end time and duration in `./data`. The result (OK / Warning / Error, plus file/io/data error counts) is read from the job's log (`SNAPRAID_LOG_PATH`, or `SNAPRAID_SCRUB_LOG_PATH` for scrubs) if that log was written during the run:
+
+- best: run SnapRAID with `-l <file>` (its `summary:exit:ok|warning|error` lines are used), or
+- redirect console output to the log file (`Everything OK`, `DANGER!`, `WARNING!` lines are used).
+
+Log paths may be globs such as `/docker/snapraid/logs/*.log`; the newest matching file is used. If no log was written during the run, it is recorded as **Finished** (result unknown). Jobs that start and end while the monitor is stopped are not recorded.
+
+"Last sync" uses the last sync recorded as OK in this history. Until one exists it falls back to the content file time, which scrub/fix also update.
 
 ## Updating an existing server
 

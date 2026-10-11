@@ -9,6 +9,8 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - SECRET_KEY=${SECRET_KEY}
       - REFRESH_SECONDS=${REFRESH_SECONDS:-60}
+      - SYNC_STALE_HOURS=${SYNC_STALE_HOURS:-26}
+      - SCRUB_STALE_DAYS=${SCRUB_STALE_DAYS:-14}
       - SNAPRAID_CONFIG=${SNAPRAID_CONFIG:-/etc/snapraid.conf}
       - SNAPRAID_LOG_PATH=${SNAPRAID_LOG_PATH:-/docker/snapraid-recovery-backup/resync-final.log}
       - SNAPRAID_SCRUB_LOG_PATH=${SNAPRAID_SCRUB_LOG_PATH:-}
