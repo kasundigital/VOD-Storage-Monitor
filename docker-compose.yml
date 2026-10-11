@@ -17,7 +17,7 @@ services:
     volumes:
       - ./data:/data
       - /etc/snapraid.conf:/etc/snapraid.conf:ro
-      - /var/lib/snapraid:/var/lib/snapraid:ro
+      - /var/lib/snapraid:/var/lib/snapraid:rw
       - /etc/hostname:/host/etc/hostname:ro
       - /run/udev:/run/udev:ro
       - /proc:/host/proc:ro
