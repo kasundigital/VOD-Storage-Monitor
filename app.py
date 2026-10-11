@@ -48,11 +48,18 @@ def snapraid_processes():
     processes = []
     proc = Path('/host/proc')
     try:
+        own_pidns = os.readlink('/proc/self/ns/pid')
+    except OSError:
+        own_pidns = None
+    try:
         entries = proc.iterdir()
         for entry in entries:
             if not entry.name.isdigit():
                 continue
             try:
+                # Exclude this monitor's own status/diff subprocesses.
+                if own_pidns and os.readlink(entry / 'ns/pid') == own_pidns:
+                    continue
                 argv = [p.decode('utf-8', errors='replace') for p in
                         (entry / 'cmdline').read_bytes().split(b'\0') if p]
                 if not argv or Path(argv[0]).name != 'snapraid':
