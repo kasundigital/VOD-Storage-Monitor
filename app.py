@@ -279,7 +279,7 @@ def snapraid_summary():
     pending_total = None
     if diff_ok:
         for key in pending:
-            match = re.search(r'^\\s*([0-9]+)\\s+' + re.escape(key) + r'\\s*$', diff, re.M)
+            match = re.search(r'^\s*([0-9]+)\s+' + re.escape(key) + r'\s*$', diff, re.M)
             if match:
                 pending[key] = int(match.group(1))
         # Do not present 0 when the diff format could not be parsed.
@@ -287,7 +287,7 @@ def snapraid_summary():
             pending_total = sum(v for k, v in pending.items() if k != 'equal')
 
     log_text = observation['log']['text']
-    exits = re.findall(r'^summary:exit:(\\w+)\\s*$', log_text, re.M)
+    exits = re.findall(r'^summary:exit:(\w+)\s*$', log_text, re.M)
     last_log_result = ('Unknown' if not exits else
                        'OK' if exits[-1] == 'ok' else 'Failed')
     config = snapraid_config_summary()
@@ -302,7 +302,7 @@ def snapraid_summary():
 
     coverage = None
     if status_ok:
-        match = re.search(r'(\\d+)% of the array is not scrubbed', status)
+        match = re.search(r'(\d+)% of the array is not scrubbed', status)
         if match:
             coverage = 100 - int(match.group(1))
 
