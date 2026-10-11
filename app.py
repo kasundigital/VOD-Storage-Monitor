@@ -1,7 +1,6 @@
 import os, re, json, time, threading, subprocess, sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from functools import wraps
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, flash
@@ -9,12 +8,12 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for, s
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv('DB_PATH', '/data/vodmon.db'))
 SNAPRAID_CONFIG = os.getenv('SNAPRAID_CONFIG', '/etc/snapraid.conf')
+SNAPRAID_LOG_PATH = os.getenv('SNAPRAID_LOG_PATH', '/docker/snapraid-recovery-backup/resync-final.log')
 REFRESH_SECONDS = int(os.getenv('REFRESH_SECONDS', '60'))
-ENABLE_ACTIONS = os.getenv('ENABLE_ACTIONS', 'false').lower() == 'true'
 ENABLE_DOCKER = os.getenv('ENABLE_DOCKER_MONITOR', 'false').lower() == 'true'
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
-APP_VERSION = os.getenv('APP_VERSION', '0.4.3')
+APP_VERSION = os.getenv('APP_VERSION', '0.5.0')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -43,64 +42,74 @@ def empty_dashboard():
 
 cache = {'data': empty_dashboard(), 'updated': None, 'collecting': False}
 lock = threading.Lock()
-job_lock = threading.Lock()
-job_state = {
-    'running': False, 'name': None, 'started': None, 'finished': None,
-    'returncode': None, 'status': 'idle', 'output': [], 'process': None,
-    'cancel_requested': False
-}
-
-def public_job_state():
-    with job_lock:
-        started = job_state.get('started')
-        elapsed = 0
-        if started:
-            end = time.time() if job_state.get('running') else (job_state.get('finished') or time.time())
-            elapsed = max(0, end - started)
-        lines = job_state.get('output', [])[-200:]
-        progress = None
-        for line in reversed(lines):
-            m = re.search(r'(?<!\d)(\d{1,3})%\s*,\s*([0-9.]+)\s*(MB|GB|TB)', line, re.I)
-            if m:
-                progress = {
-                    'percent': min(100, int(m.group(1))),
-                    'processed': f"{m.group(2)} {m.group(3).upper()}"
-                }
-                break
-        return {
-            'running': job_state.get('running', False),
-            'name': job_state.get('name'),
-            'started': started,
-            'finished': job_state.get('finished'),
-            'returncode': job_state.get('returncode'),
-            'status': job_state.get('status', 'idle'),
-            'elapsed': round(elapsed, 1),
-            'progress': progress,
-            'output': '\n'.join(lines)
-        }
-
-def run_job_command(cmd):
-    with job_lock:
-        job_state['process'] = None
+# This application NEVER launches maintenance jobs. Host processes and logs are observed
+# through read-only mounts, including jobs started via SSH or systemd.
+def snapraid_processes():
+    processes = []
+    proc = Path('/host/proc')
     try:
-        p = subprocess.Popen(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             bufsize=1)
-        with job_lock:
-            job_state['process'] = p
-        lines = []
-        if p.stdout:
-            for line in p.stdout:
-                line = line.rstrip()
-                lines.append(line)
-                with job_lock:
-                    job_state['output'] = lines[-200:]
-        rc = p.wait()
-        return rc, '\n'.join(lines)
-    except Exception as e:
-        return 999, str(e)
-    finally:
-        with job_lock:
-            job_state['process'] = None
+        own_pidns = os.readlink('/proc/self/ns/pid')
+    except OSError:
+        own_pidns = None
+    try:
+        entries = proc.iterdir()
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                # Exclude this monitor's own status/diff subprocesses.
+                if own_pidns and os.readlink(entry / 'ns/pid') == own_pidns:
+                    continue
+                argv = [p.decode('utf-8', errors='replace') for p in
+                        (entry / 'cmdline').read_bytes().split(b'\0') if p]
+                if not argv or Path(argv[0]).name != 'snapraid':
+                    continue
+                operation = next((a for a in reversed(argv)
+                                  if a in ('sync','scrub','check','fix','status','diff','touch','list')),
+                                 'snapraid')
+                processes.append({'pid': int(entry.name), 'name': operation})
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        pass
+    return sorted(processes, key=lambda p: p['pid'])
+
+
+def read_snapraid_log():
+    path = SNAPRAID_LOG_PATH
+    if not path:
+        return {'path': '', 'updated': None, 'text': '',
+                'error': 'Set SNAPRAID_LOG_PATH to an existing, mounted log file.'}
+    try:
+        with open(path, 'rb') as stream:
+            stream.seek(0, os.SEEK_END)
+            total = stream.tell()
+            stream.seek(max(0, total - 98304))
+            chunk = stream.read().decode('utf-8', errors='replace')
+        if total > 98304 and '\n' in chunk:
+            chunk = chunk.split('\n', 1)[1]
+        text = '\n'.join(chunk.splitlines()[-220:])
+        updated = datetime.fromtimestamp(Path(path).stat().st_mtime).astimezone().isoformat()
+        return {'path': path, 'updated': updated, 'text': text, 'error': None}
+    except OSError as exc:
+        return {'path': path, 'updated': None, 'text': '',
+                'error': f'Log unavailable: {exc.strerror or str(exc)}'}
+
+
+def snapraid_observation():
+    processes = snapraid_processes()
+    log = read_snapraid_log()
+    progress = None
+    # SnapRAID's -l structured logs may have no percentage; do not invent one.
+    for line in reversed(log['text'].splitlines()):
+        m = re.search(r'(?<!\d)(\d{1,3})%\s*,\s*([0-9.]+)\s*(MB|GB|TB)', line, re.I)
+        if m:
+            progress = {'percent': min(100, int(m.group(1))),
+                        'processed': f'{m.group(2)} {m.group(3).upper()}'}
+            break
+    return {'running': bool(processes), 'processes': processes,
+            'name': processes[0]['name'] if processes else None,
+            'progress': progress if processes else None, 'log': log}
 
 
 def run(cmd, timeout=20):
@@ -132,134 +141,6 @@ def log_event(kind, status, message, duration=0):
         (datetime.now(timezone.utc).isoformat(), kind, status, message[-12000:], duration)); c.commit(); c.close()
 
 
-DEFAULT_SCHEDULE = {
-    'sync_enabled': False,
-    'sync_time': '04:00',
-    'timezone': 'UTC',
-    'scrub_enabled': False,
-    'scrub_day': '6',
-    'scrub_time': '05:00'
-}
-
-def get_schedule():
-    cfg = dict(DEFAULT_SCHEDULE)
-    c = db()
-    rows = c.execute("SELECT key,value FROM settings WHERE key LIKE 'schedule.%'").fetchall()
-    c.close()
-    for key, value in rows:
-        name = key.split('.', 1)[1]
-        if name in ('sync_enabled', 'scrub_enabled'):
-            cfg[name] = str(value).lower() == 'true'
-        elif name in cfg:
-            cfg[name] = value
-    try:
-        tz = ZoneInfo(cfg['timezone'])
-        now_local = datetime.now(tz)
-        cfg['current_time'] = now_local.strftime('%Y-%m-%d %H:%M:%S %Z')
-    except Exception:
-        cfg['timezone'] = 'UTC'
-        now_local = datetime.now(timezone.utc)
-        cfg['current_time'] = now_local.strftime('%Y-%m-%d %H:%M:%S UTC')
-    cfg['server_time'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-    return cfg
-
-def save_schedule(cfg):
-    c = db()
-    for key in ('sync_enabled','sync_time','timezone','scrub_enabled','scrub_day','scrub_time'):
-        value = cfg.get(key, DEFAULT_SCHEDULE[key])
-        if isinstance(value, bool):
-            value = 'true' if value else 'false'
-        c.execute('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                  ('schedule.' + key, str(value)))
-    c.commit()
-    c.close()
-
-def start_snapraid_job(name, source='dashboard'):
-    allowed = {
-        'status': ['snapraid','-c',SNAPRAID_CONFIG,'status'],
-        'diff': ['snapraid','-c',SNAPRAID_CONFIG,'diff'],
-        'sync': ['snapraid','-c',SNAPRAID_CONFIG,'sync'],
-        'scrub10': ['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','10'],
-        'scrub_full': ['snapraid','-c',SNAPRAID_CONFIG,'scrub','-p','100'],
-    }
-    if name not in set(allowed) | {'check'}:
-        return False, 'Unknown action'
-
-    with job_lock:
-        if job_state['running']:
-            return False, f"SnapRAID {job_state['name']} is already running"
-        job_state.update({
-            'running':True,'name':name,'started':time.time(),'finished':None,
-            'returncode':None,'status':'running','output':[],'process':None,
-            'cancel_requested':False
-        })
-
-    def task():
-        start=time.time()
-        try:
-            if name == 'check':
-                rc1,out1=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'status'])
-                if rc1 == 0:
-                    rc2,out2=run_job_command(['snapraid','-c',SNAPRAID_CONFIG,'diff'])
-                else:
-                    rc2,out2=rc1,'Diff skipped because status failed.'
-                rc = rc1 if rc1 else (0 if rc2 in (0, 2) else rc2)
-                out = '=== STATUS ===\n'+out1+'\n\n=== DIFF ===\n'+out2
-            else:
-                rc,out=run_job_command(allowed[name])
-
-            with job_lock:
-                cancelled=job_state.get('cancel_requested',False)
-                job_state['running']=False
-                job_state['finished']=time.time()
-                job_state['returncode']=rc
-                job_state['status']='cancelled' if cancelled else ('success' if rc==0 else 'failed')
-                if out:
-                    job_state['output']=out.splitlines()[-200:]
-            log_event(name,'cancelled' if cancelled else ('success' if rc==0 else 'failed'),
-                      out,time.time()-start)
-        except Exception as e:
-            with job_lock:
-                job_state['running']=False
-                job_state['finished']=time.time()
-                job_state['returncode']=999
-                job_state['status']='failed'
-                job_state['output']=[str(e)]
-            log_event(name,'failed',str(e),time.time()-start)
-        finally:
-            collect()
-
-    threading.Thread(target=task,daemon=True).start()
-    log_event(name,'started',f'{name} started from {source}',0)
-    return True, f'SnapRAID {name} started'
-
-schedule_state = {'last_sync_date': None, 'last_scrub_key': None}
-
-def scheduler_loop():
-    while True:
-        try:
-            cfg = get_schedule()
-            tz = ZoneInfo(cfg.get('timezone') or 'UTC')
-            now = datetime.now(tz)
-            hhmm = now.strftime('%H:%M')
-            today = now.strftime('%Y-%m-%d')
-
-            if cfg.get('sync_enabled') and hhmm == cfg.get('sync_time'):
-                if schedule_state.get('last_sync_date') != today:
-                    ok, _ = start_snapraid_job('sync', 'automatic schedule')
-                    if ok:
-                        schedule_state['last_sync_date'] = today
-
-            scrub_key = f"{today}-{cfg.get('scrub_day')}"
-            if cfg.get('scrub_enabled') and str(now.weekday()) == str(cfg.get('scrub_day')) and hhmm == cfg.get('scrub_time'):
-                if schedule_state.get('last_scrub_key') != scrub_key:
-                    ok, _ = start_snapraid_job('scrub10', 'automatic schedule')
-                    if ok:
-                        schedule_state['last_scrub_key'] = scrub_key
-        except Exception as e:
-            log_event('scheduler','failed',str(e),0)
-        time.sleep(20)
-
 background_lock = threading.Lock()
 background_started = False
 
@@ -270,7 +151,6 @@ def start_background_threads():
             return
         background_started = True
         threading.Thread(target=collector_loop,daemon=True,name='collector').start()
-        threading.Thread(target=scheduler_loop,daemon=True,name='scheduler').start()
 
 
 def auth_required(fn):
@@ -360,36 +240,42 @@ def snapraid_last_sync():
 
 
 def snapraid_summary():
-    job = public_job_state()
-    maintenance_running = job.get('running') and job.get('name') in ('sync', 'scrub10', 'scrub_full')
+    observation = snapraid_observation()
+    running = observation['running']
+    previous = cache.get('data', {}).get('snapraid', {})
 
-    rc, status = run(['snapraid', '-c', SNAPRAID_CONFIG, 'status'], timeout=60)
-    status_ok = (rc == 0 and bool(status.strip()))
-
-    if maintenance_running:
-        # SnapRAID holds its lock during sync/scrub, so do not run diff in parallel.
+    if running:
+        # An externally managed SnapRAID operation owns the content lock.
+        # Don't run status/diff during maintenance or misreport lock errors as failures.
+        rc = None
         rc2 = None
-        diff = ''
+        status = previous.get('status_raw', '')
+        diff = previous.get('diff_raw', '')
+        status_ok = None
         diff_ok = None
+        pending = dict(previous.get('changes', {}))
     else:
+        rc, status = run(['snapraid', '-c', SNAPRAID_CONFIG, 'status'], timeout=60)
+        status_ok = (rc == 0 and bool(status.strip()))
         rc2, diff = run(['snapraid', '-c', SNAPRAID_CONFIG, 'diff'], timeout=120)
         diff_ok = (rc2 in (0, 2) and bool(diff.strip()))
+        pending = {}
+        for key in ['equal', 'added', 'removed', 'updated', 'moved', 'copied', 'restored']:
+            match = re.search(r'^\s*([0-9]+)\s+' + re.escape(key) + r'\s*$', diff, re.M) if diff else None
+            pending[key] = int(match.group(1)) if match else 0
 
-    pending = {}
-    for key in ['equal', 'added', 'removed', 'updated', 'moved', 'copied', 'restored']:
-        match = re.search(r'^\\s*([0-9]+)\\s+' + re.escape(key) + r'\\s*$', diff, re.M) if diff else None
-        pending[key] = int(match.group(1)) if match else 0
-
-    warning_source = status + ('\\n' + diff if diff else '')
+    warning_source = status + ('\n' + diff if diff else '')
     hidden_warning = "WARNING! For 30 disks, it's recommended to use five parity levels."
-    warning = list(dict.fromkeys(
+    warnings = list(dict.fromkeys(
         line.strip() for line in warning_source.splitlines()
         if 'WARNING!' in line and line.strip() != hidden_warning
     ))
     pending_total = sum(value for key, value in pending.items() if key != 'equal')
 
-    if maintenance_running:
-        protection = 'Syncing' if job.get('name') == 'sync' else 'Scrubbing'
+    if running:
+        name = observation['name']
+        protection = {'sync':'Syncing', 'scrub':'Scrubbing', 'fix':'Repair in progress',
+                      'check':'Checking'}.get(name, 'SnapRAID busy')
     elif not status_ok:
         protection = 'Unavailable'
     elif diff_ok is False:
@@ -400,20 +286,13 @@ def snapraid_summary():
         protection = 'Changes Pending'
 
     return {
-        'status_rc': rc,
-        'diff_rc': rc2,
-        'status_ok': status_ok,
-        'diff_ok': diff_ok,
-        'status_raw': status,
-        'diff_raw': diff,
-        'changes': pending,
-        'pending_total': pending_total,
-        'protection': protection,
-        'warnings': warning,
-        'last_sync': snapraid_last_sync(),
-        'config': snapraid_config_summary(),
-        'maintenance_running': maintenance_running,
-        'job': job
+        'status_rc': rc, 'diff_rc': rc2, 'status_ok': status_ok,
+        'diff_ok': diff_ok, 'status_raw': status, 'diff_raw': diff,
+        'changes': pending, 'pending_total': pending_total,
+        'protection': protection, 'warnings': warnings,
+        'last_sync': snapraid_last_sync(), 'config': snapraid_config_summary(),
+        'maintenance_running': running,
+        'job': {'name': observation['name'], 'progress': observation['progress']}
     }
 
 
@@ -679,94 +558,17 @@ def index():
         threading.Thread(target=collect,daemon=True).start()
     data=cache.get('data') or empty_dashboard()
     c=db(); events=c.execute('SELECT ts,kind,status,message,duration FROM events ORDER BY id DESC LIMIT 20').fetchall(); c.close()
-    return render_template('index.html', data=data, updated=cache['updated'] or 'initializing', actions=ENABLE_ACTIONS, events=events)
+    return render_template('index.html', data=data, updated=cache['updated'] or 'initializing', events=events)
 
 @app.route('/api/status')
 @auth_required
 def api_status():
     return jsonify({'updated':cache['updated'], **cache['data']})
 
-@app.route('/api/refresh',methods=['POST'])
+@app.route('/api/observation')
 @auth_required
-def api_refresh():
-    threading.Thread(target=collect,daemon=True).start()
-    return jsonify({'ok':True})
-
-@app.route('/api/job')
-@auth_required
-def api_job():
-    return jsonify(public_job_state())
-
-@app.route('/api/action/<name>',methods=['POST'])
-@auth_required
-def action(name):
-    if not ENABLE_ACTIONS:
-        return jsonify({'ok':False,'error':'Actions disabled. Set ENABLE_ACTIONS=true.'}),403
-    ok, message = start_snapraid_job(name, 'dashboard')
-    if not ok:
-        status = 409 if 'already running' in message else 400
-        return jsonify({'ok':False,'error':message}),status
-    return jsonify({'ok':True,'message':message})
-
-
-@app.route('/api/schedule',methods=['GET','POST'])
-@auth_required
-def schedule_api():
-    if request.method == 'GET':
-        return jsonify(get_schedule())
-
-    payload = request.get_json(silent=True) or {}
-    tz_name = str(payload.get('timezone','UTC')).strip()
-    try:
-        ZoneInfo(tz_name)
-    except Exception:
-        return jsonify({'ok':False,'error':'Invalid timezone'}),400
-
-    def valid_time(value):
-        try:
-            datetime.strptime(str(value or ''), '%H:%M')
-            return True
-        except (TypeError, ValueError):
-            return False
-
-    sync_time = str(payload.get('sync_time','04:00'))
-    scrub_time = str(payload.get('scrub_time','05:00'))
-    scrub_day = str(payload.get('scrub_day','6'))
-
-    if not valid_time(sync_time) or not valid_time(scrub_time):
-        return jsonify({'ok':False,'error':'Time must be HH:MM'}),400
-    if scrub_day not in {'0','1','2','3','4','5','6'}:
-        return jsonify({'ok':False,'error':'Invalid scrub day'}),400
-
-    cfg = {
-        'sync_enabled': bool(payload.get('sync_enabled')),
-        'sync_time': sync_time,
-        'timezone': tz_name,
-        'scrub_enabled': bool(payload.get('scrub_enabled')),
-        'scrub_day': scrub_day,
-        'scrub_time': scrub_time
-    }
-    save_schedule(cfg)
-    return jsonify({'ok':True, **get_schedule()})
-
-
-@app.route('/api/action/cancel',methods=['POST'])
-@auth_required
-def cancel_action():
-    if not ENABLE_ACTIONS:
-        return jsonify({'ok':False,'error':'Actions disabled'}),403
-    with job_lock:
-        if not job_state.get('running'):
-            return jsonify({'ok':False,'error':'No SnapRAID job is running'}),409
-        p=job_state.get('process')
-        job_state['cancel_requested']=True
-        job_state['status']='cancelling'
-    try:
-        if p and p.poll() is None:
-            p.terminate()
-        return jsonify({'ok':True,'message':'Cancel requested'})
-    except Exception as e:
-        return jsonify({'ok':False,'error':str(e)}),500
+def api_observation():
+    return jsonify(snapraid_observation())
 
 
 db()
