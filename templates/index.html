@@ -10,7 +10,7 @@
 {% endif %}
 <header><div><div class="brand">VOD STORAGE MONITOR</div><div class="muted">{{data.hostname}} · v{{data.app_version}} · build {{data.build_sha}} · updated <span id="updated">{{updated}}</span></div></div><div class="header-actions"><button onclick="location.reload()">Reload</button><a class="button ghost" href="/logout">Logout</a></div></header>
 <main>
-<section id="inventoryBanner" class="inventory-banner" {% if not data.disk_inventory.alerts %}hidden{% endif %} role="alert" aria-live="polite">
+<section id="inventoryBanner" class="inventory-banner {{'critical' if data.disk_inventory.missing else ''}}" {% if not data.disk_inventory.alerts %}hidden{% endif %} role="alert" aria-live="polite">
   <strong id="inventoryHeadline">{% if data.disk_inventory.missing %}{{data.disk_inventory.missing}} configured disk location(s) missing or unavailable{% else %}Disk inventory needs attention{% endif %}</strong>
   <div id="inventorySummary">{{data.disk_inventory.online}} / {{data.disk_inventory.expected}} expected locations verified · {{data.disk_inventory.baseline}}</div>
   <ul id="inventoryAlerts">{% for a in data.disk_inventory.alerts %}<li><b>{{a.label}}</b> — {{a.detail}}</li>{% endfor %}</ul>
