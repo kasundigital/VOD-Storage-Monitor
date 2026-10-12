@@ -10,11 +10,16 @@
 {% endif %}
 <header><div><div class="brand">VOD STORAGE MONITOR</div><div class="muted">{{data.hostname}} · v{{data.app_version}} · build {{data.build_sha}} · updated <span id="updated">{{updated}}</span></div></div><div class="header-actions"><button onclick="location.reload()">Reload</button><a class="button ghost" href="/logout">Logout</a></div></header>
 <main>
+<section id="inventoryBanner" class="inventory-banner {{'critical' if data.disk_inventory.missing else ''}}" {% if not data.disk_inventory.alerts %}hidden{% endif %} role="alert" aria-live="polite">
+  <strong id="inventoryHeadline">{% if data.disk_inventory.missing %}{{data.disk_inventory.missing}} configured disk location(s) missing or unavailable{% else %}Disk inventory needs attention{% endif %}</strong>
+  <div id="inventorySummary">{{data.disk_inventory.online}} / {{data.disk_inventory.expected}} expected locations verified · {{data.disk_inventory.baseline}}</div>
+  <ul id="inventoryAlerts">{% for a in data.disk_inventory.alerts %}<li><b>{{a.label}}</b> — {{a.detail}}</li>{% endfor %}</ul>
+</section>
 <section class="grid hero">
 <div class="card"><span>VOD Pool</span><strong>{{data.storage.vod.size_h}}</strong><small>{{data.storage.vod.used_h}} used · {{data.storage.vod.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.vod.pct}}%"></i></div><b>{{data.storage.vod.pct}}%</b></div>
 <div class="card"><span>Docker RAID</span><strong>{{data.storage.docker.size_h}}</strong><small>{{data.storage.docker.used_h}} used · {{data.storage.docker.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.docker.pct}}%"></i></div><b>{{data.storage.docker.pct}}%</b></div>
 <div class="card"><span>SnapRAID</span><strong id="snapHeroProtection">{{data.snapraid.protection}}</strong><small>Last sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small><b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}} pending change(s){% else %}Diff unavailable{% endif %}</b></div>
-<div class="card"><span>Disk Health</span><strong>{{data.disk_health.healthy}} / {{data.disk_health.total}}</strong><small>{{data.disk_health.warning}} warning · {{data.disk_health.failed}} failed{% if data.disk_health.other %} · {{data.disk_health.other}} unknown{% endif %}{% if data.disk_health.standby %} · {{data.disk_health.standby}} sleeping{% endif %}</small><b>Max temp: {{data.disk_health.max_temp if data.disk_health.max_temp is not none else '-'}}°C</b></div>
+<div class="card"><span>Disk Health</span><strong>{{data.disk_health.healthy}} / {{data.disk_health.total}}</strong><small>{{data.disk_health.warning}} warning · {{data.disk_health.failed}} failed{% if data.disk_health.other %} · {{data.disk_health.other}} unknown{% endif %}{% if data.disk_health.standby %} · {{data.disk_health.standby}} sleeping{% endif %}</small><b>Max temp: {{data.disk_health.max_temp if data.disk_health.max_temp is not none else '-'}}°C</b><small id="inventoryHero">{{data.disk_inventory.online}} / {{data.disk_inventory.expected}} expected SnapRAID disk locations verified · {{data.disk_inventory.missing}} missing</small></div>
 </section>
 
 <section class="two-col"><div class="panel"><div class="panel-title"><h2>RAID Arrays</h2></div><div class="table-wrap"><table><thead><tr><th>Array</th><th>Level</th><th>Status</th><th>Activity</th></tr></thead><tbody>{% for r in data.raid %}<tr><td>{{r.name}}</td><td>{{r.level}}</td><td><span class="pill {{'ok' if r.healthy else 'bad'}}">{{'Healthy' if r.healthy else 'Degraded'}}</span></td><td>{% if r.progress %}{{r.progress.type}} {{r.progress.percent}}%{% else %}Idle{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>
@@ -71,6 +76,30 @@
   <details><summary>Raw status</summary><pre id="snapRawStatus">{{data.snapraid.status_raw or 'No host snapshot collected. Dashboard does not execute SnapRAID.'}}</pre></details>
   <details><summary>Raw diff</summary><pre id="snapRawDiff">{{data.snapraid.diff_raw or 'No host snapshot collected. Dashboard does not execute SnapRAID.'}}</pre></details>
 </div></section>
+
+<section class="panel">
+  <div class="panel-title">
+    <h2>Expected SnapRAID Disks &amp; Parity</h2>
+    <span id="inventoryCount">{{data.disk_inventory.online}} / {{data.disk_inventory.expected}} verified · {{data.disk_inventory.missing}} missing</span>
+  </div>
+  <div class="info-note">Live checks from the host mount table and block-device identities. "Missing mount" does not prove the HDD failed; "Device missing" means the mounted block device could not be found. Serial identities are remembered only after a complete healthy inventory. No disk operations are performed.</div>
+  <div class="table-wrap">
+    <table class="disk-inventory-table">
+      <thead><tr><th>Role</th><th>Configured disk</th><th>Expected path</th><th>Host mount</th><th>Device</th><th>Serial</th><th>Status</th></tr></thead>
+      <tbody id="inventoryRows">
+      {% for d in data.disk_inventory.entries %}
+      <tr class="{{'inventory-critical' if d.severity == 'critical' else ('inventory-warning' if d.severity == 'warning' else '')}}">
+        <td>{{d.role}}</td><td>{{d.id}}</td><td class="mono">{{d.path}}</td>
+        <td class="mono">{{d.mount or '-'}}</td><td class="mono">{{d.device or '-'}}</td>
+        <td class="mono">{{d.serial or d.expected_serial or '-'}}</td>
+        <td><span class="pill {{'bad' if d.severity == 'critical' else ('warn' if d.severity == 'warning' else 'ok')}}">{{d.status|replace('_',' ')|capitalize}}</span></td>
+      </tr>
+      {% else %}<tr><td colspan="7">Inventory not yet available.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="inventory-footnote">Baseline: <span id="inventoryBaseline">{{data.disk_inventory.baseline}}</span> · Disk letters (sda, sdb, etc.) can change after a reboot; serial numbers are used to recognize physical drives.</div>
+</section>
 
 <section class="panel">
   <div class="panel-title"><h2>Physical Disks</h2><span>{{data.disks|length}} detected</span></div>
@@ -159,11 +188,38 @@ async function pollObservation(){
     setText('opFailDetail', f ? (f.status+' · '+f.message) : '-');
   }catch(e){}
 }
+function refreshDiskInventory(inv){
+  if(!inv) return;
+  setText('inventoryHero', (inv.online ?? 0)+' / '+(inv.expected ?? 0)+' expected SnapRAID disk locations verified · '+(inv.missing ?? 0)+' missing');
+  setText('inventoryCount', (inv.online ?? 0)+' / '+(inv.expected ?? 0)+' verified · '+(inv.missing ?? 0)+' missing');
+  setText('inventoryBaseline', inv.baseline || 'Unavailable');
+  const banner=document.getElementById('inventoryBanner');
+  if(banner){
+    banner.hidden=!(inv.alerts||[]).length;
+    banner.classList.toggle('critical',!!inv.missing);
+    setText('inventoryHeadline', inv.missing ? inv.missing+' configured disk location(s) missing or unavailable' : 'Disk inventory needs attention');
+    setText('inventorySummary', (inv.online ?? 0)+' / '+(inv.expected ?? 0)+' expected locations verified · '+(inv.baseline||'Unknown'));
+    const alerts=document.getElementById('inventoryAlerts');
+    if(alerts) alerts.innerHTML=(inv.alerts||[]).map(a=>'<li><b>'+esc(a.label)+'</b> — '+esc(a.detail)+'</li>').join('');
+  }
+  const rows=document.getElementById('inventoryRows');
+  if(rows){
+    rows.innerHTML=(inv.entries||[]).map(d=>{
+      const level=d.severity==='critical'?'bad':d.severity==='warning'?'warn':'ok';
+      const tr=d.severity==='critical'?'inventory-critical':d.severity==='warning'?'inventory-warning':'';
+      return '<tr class="'+tr+'"><td>'+esc(d.role)+'</td><td>'+esc(d.id)+'</td>'+
+        '<td class="mono">'+esc(d.path)+'</td><td class="mono">'+esc(d.mount||'-')+'</td>'+
+        '<td class="mono">'+esc(d.device||'-')+'</td><td class="mono">'+esc(d.serial||d.expected_serial||'-')+'</td>'+
+        '<td><span class="pill '+level+'">'+esc((d.status||'unknown').replaceAll('_',' '))+'</span></td></tr>';
+    }).join('') || '<tr><td colspan="7">Inventory not yet available.</td></tr>';
+  }
+}
 async function refreshStatus(){
   try{
     const r=await fetch('/api/status');
     const j=await r.json();
     document.getElementById('updated').textContent=j.updated||'';
+    refreshDiskInventory(j.disk_inventory);
     if(j.snapraid){
       const s=j.snapraid;
       const set=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};

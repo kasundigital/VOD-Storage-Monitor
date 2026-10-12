@@ -19,6 +19,21 @@ Monitor mergerfs capacity, mdadm RAID arrays, HDD/NVMe SMART health, and externa
 
 **Important accuracy rule:** The monitor does not call a historical sync log a live health check. It displays `Last log OK` instead of `Protected`. Without a snapshot, pending changes, status, diff and scrub coverage display **Unknown / Not collected**, never zero or failed. A snapshot is a point-in-time reading, not continuously verified protection.
 
+## Missing HDD / parity disk detection (v0.6.1)
+
+This dashboard now checks the **expected** disks from the configured `snapraid.conf` against the **host's** live mount table (`/host/proc/1/mountinfo`) and block devices (`lsblk`). Missing disks are listed even if they have vanished from `lsblk`.
+
+- A configured `data` or `parity` location without its own filesystem mount is **Missing mount** (critical); this may be an unmount, a failed device, or a boot/mount configuration problem — not necessarily a failed HDD.
+- A location still in the host mount table but with a major:minor block device not found by `lsblk` is **Device missing** (critical). Inspect the host before making repairs.
+- If physical drive identity cannot be verified, the monitor says **Unverified**, never falsely "Healthy".
+- After **all** expected slots are online and their serial numbers are available, the app automatically captures a reference to `/data/disk-baseline.json`. The baseline is not created from a degraded configuration. It survives monitor container upgrades under `/docker/vod-monitor/data`.
+- Subsequent scans can identify the previous serial of a missing drive and flag a change of serial while avoiding false alarms when a Linux device name such as `sdb` changes.
+- If a SnapRAID disk entry disappears from the config after the baseline was saved, it remains flagged instead of silently reducing the expected number.
+
+The table lists configured **data and parity mounts**, not total physical drives including the Ubuntu boot disks or NVMe RAID. There is no physical "failed disk" verdict from a mount alert; always confirm via host diagnostics. If the host mount table is unavailable, inventory state is **Unknown**, not a fabricated all-good or all-missing count.
+
+The checker only **reads** `snapraid.conf`, `/proc`, and `lsblk`. It never mounts/unmounts disks, runs SnapRAID, scrubs parity, or modifies data drives. Only the monitor's internal healthy-inventory snapshot is written under `/data`. Current alerts appear after the next monitor collection (normally within 60 seconds).
+
 ## Install
 
 ```bash
