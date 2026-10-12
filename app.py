@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, flash
+from disk_inventory import check_inventory
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv('DB_PATH', '/data/vodmon.db'))
@@ -94,6 +95,8 @@ def empty_dashboard():
             'config':{'data_disks':0,'parity_levels':0,'content_copies':0,'parity_paths':[]}
         },
         'disks': [],
+        'disk_inventory': {'expected':0,'online':0,'missing':0,'warnings':0,'entries':[],
+                           'alerts':[],'health':'unknown','baseline':'Unavailable'},
         'docker': {'enabled':ENABLE_DOCKER,'containers':[]},
         'hostname': (Path('/host/etc/hostname').read_text().strip() if Path('/host/etc/hostname').exists() else os.uname().nodename),
         'app_version': APP_VERSION,
@@ -845,6 +848,7 @@ def collect(force=False):
             'raid': parse_mdstat(),
             'snapraid': snapraid_summary(),
             'disks': list_disks(),
+            'disk_inventory': check_inventory(SNAPRAID_CONFIG, run),
             'docker': docker_status(),
             'hostname': (Path('/host/etc/hostname').read_text().strip() if Path('/host/etc/hostname').exists() else os.uname().nodename),
             'app_version': APP_VERSION,
