@@ -10,23 +10,57 @@
 {% endif %}
 <header><div><div class="brand">VOD STORAGE MONITOR</div><div class="muted">{{data.hostname}} · v{{data.app_version}} · build {{data.build_sha}} · updated <span id="updated">{{updated}}</span></div></div><div class="header-actions"><button onclick="location.reload()">Reload</button><a class="button ghost" href="/logout">Logout</a></div></header>
 <main>
+<section id="healthSummary" class="health-summary state-{{data.health_overview.level}}" role="status" aria-live="polite" aria-atomic="true">
+  <span class="health-mark" aria-hidden="true"></span>
+  <div class="health-summary-copy">
+    <span class="health-eyebrow">SERVER HEALTH OVERVIEW</span>
+    <strong id="healthSummaryTitle">{{data.health_overview.label}}</strong>
+    <p id="healthSummaryDetail">{{data.health_overview.detail}}</p>
+  </div>
+  <span class="health-summary-updated" id="healthSummaryUpdated">Updated {{updated}}</span>
+</section>
 <section id="inventoryBanner" class="inventory-banner {{'critical' if data.disk_inventory.missing else ''}}" {% if not data.disk_inventory.alerts %}hidden{% endif %} role="alert" aria-live="polite">
   <strong id="inventoryHeadline">{% if data.disk_inventory.missing %}{{data.disk_inventory.missing}} configured disk location(s) missing or unavailable{% else %}Disk inventory needs attention{% endif %}</strong>
   <div id="inventorySummary">{{data.disk_inventory.online}} / {{data.disk_inventory.expected}} expected locations verified · {{data.disk_inventory.baseline}}</div>
   <ul id="inventoryAlerts">{% for a in data.disk_inventory.alerts %}<li><b>{{a.label}}</b> — {{a.detail}}</li>{% endfor %}</ul>
 </section>
-<section class="grid hero">
-<div class="card"><span>VOD Pool</span><strong>{{data.storage.vod.size_h}}</strong><small>{{data.storage.vod.used_h}} used · {{data.storage.vod.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.vod.pct}}%"></i></div><b>{{data.storage.vod.pct}}%</b></div>
-<div class="card"><span>Docker RAID</span><strong>{{data.storage.docker.size_h}}</strong><small>{{data.storage.docker.used_h}} used · {{data.storage.docker.avail_h}} free</small><div class="bar"><i style="width:{{data.storage.docker.pct}}%"></i></div><b>{{data.storage.docker.pct}}%</b></div>
-<div class="card"><span>SnapRAID</span><strong id="snapHeroProtection">{{data.snapraid.protection}}</strong><small>Last sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small><b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}} pending change(s){% else %}Diff unavailable{% endif %}</b></div>
-<div class="card"><span>Disk Health</span><strong>{{data.disk_health.healthy}} / {{data.disk_health.total}}</strong><small>{{data.disk_health.warning}} warning · {{data.disk_health.failed}} failed{% if data.disk_health.other %} · {{data.disk_health.other}} unknown{% endif %}{% if data.disk_health.standby %} · {{data.disk_health.standby}} sleeping{% endif %}</small><b>Max temp: {{data.disk_health.max_temp if data.disk_health.max_temp is not none else '-'}}°C</b><small id="inventoryHero">{{data.disk_inventory.online}} / {{data.disk_inventory.expected}} expected SnapRAID disk locations verified · {{data.disk_inventory.missing}} missing</small></div>
+<section class="grid hero" aria-label="Storage and protection indicators">
+<div class="card health-card state-{{data.health_overview.cards.vod.level}}" id="heroVod">
+  <div class="card-top"><span>VOD Pool</span><span class="signal-pill state-{{data.health_overview.cards.vod.level}}" id="heroVodSignal">{{data.health_overview.cards.vod.label}}</span></div>
+  <strong>{{data.storage.vod.size_h}}</strong>
+  <small>{{data.storage.vod.used_h}} used · {{data.storage.vod.avail_h}} free</small>
+  <div class="bar"><i style="width:{{data.storage.vod.pct}}%"></i></div><b>{{data.storage.vod.pct}}%</b>
+  <small class="card-caption" id="heroVodDetail">{{data.health_overview.cards.vod.detail}}</small>
+</div>
+<div class="card health-card state-{{data.health_overview.cards.raid.level}}" id="heroRaid">
+  <div class="card-top"><span>Docker RAID</span><span class="signal-pill state-{{data.health_overview.cards.raid.level}}" id="heroRaidSignal">{{data.health_overview.cards.raid.label}}</span></div>
+  <strong>{{data.storage.docker.size_h}}</strong>
+  <small>{{data.storage.docker.used_h}} used · {{data.storage.docker.avail_h}} free</small>
+  <div class="bar"><i style="width:{{data.storage.docker.pct}}%"></i></div><b>{{data.storage.docker.pct}}%</b>
+  <small class="card-caption" id="heroRaidDetail">{{data.health_overview.cards.raid.detail}}</small>
+</div>
+<div class="card health-card state-{{data.health_overview.cards.snapraid.level}}" id="heroSnapraid">
+  <div class="card-top"><span>SnapRAID</span><span class="signal-pill state-{{data.health_overview.cards.snapraid.level}}" id="heroSnapraidSignal">{{{'ok':'Good','warn':'Review','bad':'Critical','unknown':'Unverified','busy':'Running'}[data.health_overview.cards.snapraid.level]}}</span></div>
+  <strong id="snapHeroProtection">{{data.health_overview.cards.snapraid.label}}</strong>
+  <small>Last sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small>
+  <b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}} pending change(s){% else %}Diff unavailable{% endif %}</b>
+  <small class="card-caption" id="heroSnapraidDetail">{{data.health_overview.cards.snapraid.detail}}</small>
+</div>
+<div class="card health-card state-{{data.health_overview.cards.disks.level}}" id="heroDisks">
+  <div class="card-top"><span>Disk Health</span><span class="signal-pill state-{{data.health_overview.cards.disks.level}}" id="heroDisksSignal">{{data.health_overview.cards.disks.label}}</span></div>
+  <strong>{{data.disk_health.healthy}} / {{data.disk_health.total}}</strong>
+  <small>{{data.disk_health.warning}} warning · {{data.disk_health.failed}} failed{% if data.disk_health.other %} · {{data.disk_health.other}} unknown{% endif %}{% if data.disk_health.standby %} · {{data.disk_health.standby}} sleeping{% endif %}</small>
+  <b>Max temp: {{data.disk_health.max_temp if data.disk_health.max_temp is not none else '-'}}°C</b>
+  <small id="inventoryHero">{{data.disk_inventory.online}} / {{data.disk_inventory.expected}} expected SnapRAID disk locations verified · {{data.disk_inventory.missing}} missing</small>
+  <small class="card-caption" id="heroDisksDetail">{{data.health_overview.cards.disks.detail}}</small>
+</div>
 </section>
 
 <section class="two-col"><div class="panel"><div class="panel-title"><h2>RAID Arrays</h2></div><div class="table-wrap"><table><thead><tr><th>Array</th><th>Level</th><th>Status</th><th>Activity</th></tr></thead><tbody>{% for r in data.raid %}<tr><td>{{r.name}}</td><td>{{r.level}}</td><td><span class="pill {{'ok' if r.healthy else 'bad'}}">{{'Healthy' if r.healthy else 'Degraded'}}</span></td><td>{% if r.progress %}{{r.progress.type}} {{r.progress.percent}}%{% else %}Idle{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>
 <div class="panel snap-panel">
   <div class="panel-title">
     <div><h2>SnapRAID</h2><span class="subtle">{{data.snapraid.config.data_disks}} data · {{data.snapraid.config.parity_levels}} parity · {{data.snapraid.config.content_copies}} content copies</span></div>
-    <span id="snapProtectionPill" class="pill {{'warn' if data.snapraid.maintenance_running or data.snapraid.protection in ['Last log OK','Last log warning'] else 'bad'}}">{{data.snapraid.protection}}</span>
+    <span id="snapProtectionPill" class="signal-pill state-{{data.health_overview.cards.snapraid.level}}" title="Snapshot-aware assessment; the last log alone is not live proof of protection">{{data.health_overview.cards.snapraid.label}}</span>
   </div>
 
   <div class="kv">
@@ -53,17 +87,17 @@
       {% set l = last_run.last %}
       <b id="opLast">{% if l %}{{l.kind|capitalize}} · <i class="pill {{l.level}}">{{l.status}}</i>{% else %}No runs recorded yet{% endif %}</b>
       <small id="opLastDetail">{% if l %}Ended {{l.ended or '-'}} ({{l.ended_age or '-'}}) · took {{l.duration}}{% else %}Recorded once a job is seen finishing{% endif %}</small></div>
-    <div class="op {{'stale' if data.snapraid.last_sync and data.snapraid.last_sync.stale else ''}}"><span>Last sync</span>
+    <div id="opSyncCard" class="op {{'stale' if data.snapraid.last_sync and data.snapraid.last_sync.stale else ('state-ok' if data.snapraid.last_sync else 'state-unknown')}}"><span>Last sync</span>
       <b id="opSync">{{data.snapraid.last_sync.age if data.snapraid.last_sync else 'Unknown'}}</b>
       <small id="opSyncDetail">{% if data.snapraid.last_sync %}{{data.snapraid.last_sync.display}} · from {{data.snapraid.last_sync.source}}{% if data.snapraid.last_sync.stale %} · older than {{stale_hours|int}}h{% endif %}{% else %}-{% endif %}</small></div>
-    <div class="op {{'bad' if last_run.last_failed else ''}}"><span>Last failure</span>
+    <div class="op historical"><span>Last failure (history)</span>
       {% set f = last_run.last_failed %}
       <b id="opFail">{% if f %}{{f.kind|capitalize}} · {{f.ended_age or f.started}}{% else %}None recorded{% endif %}</b>
-      <small id="opFailDetail">{% if f %}{{f.status}} · {{f.message}}{% else %}-{% endif %}</small></div>
+      <small id="opFailDetail">{% if f %}Historical incident · {{f.status}} · {{f.message}}{% else %}No recorded failures{% endif %}</small></div>
     <div class="op {{'stale' if data.snapraid.scrub_stale else ''}}"><span>Scrub</span>
       <b id="opScrub">{% if h.scrub_newest_days is not none %}Newest {{h.scrub_newest_days}}d ago{% else %}Unknown{% endif %}</b>
       <small id="opScrubDetail">{% if h.scrub_oldest_days is not none %}Oldest block {{h.scrub_oldest_days}}d · {{h.unscrubbed_pct if h.unscrubbed_pct is not none else '?'}}% never scrubbed{% else %}From host snapshot{% endif %}</small></div>
-    <div class="op {{'bad' if h.errors or h.sync_in_progress else ''}}"><span>Array state</span>
+    <div id="opArrayCard" class="op {{'bad' if h.errors or h.sync_in_progress else ('state-ok' if data.health_overview.cards.snapraid.level == 'ok' else 'state-unknown')}}"><span>Array state</span>
       <b id="opArray">{% if h.errors %}{{h.errors}} error(s){% elif h.sync_in_progress %}Sync stopped at {{h.sync_in_progress}}%{% elif h.errors == 0 %}No errors{% else %}Unknown{% endif %}</b>
       <small id="opArrayDetail">{% if h.sync_in_progress and not data.snapraid.maintenance_running %}Last sync did not finish{% else %}From host snapshot{% endif %}</small></div>
   </div>
@@ -163,6 +197,45 @@ waitForInitialData();
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const cap=v=>v?String(v).charAt(0).toUpperCase()+String(v).slice(1):'';
 const setText=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
+const HEALTH_STATES=['ok','warn','bad','unknown','busy'];
+const SIGNAL_LABELS={ok:'Good',warn:'Review',bad:'Critical',unknown:'Unverified',busy:'Running'};
+function applyState(element,level){
+  if(!element) return;
+  const state=HEALTH_STATES.includes(level)?level:'unknown';
+  HEALTH_STATES.forEach(s=>element.classList.remove('state-'+s));
+  element.classList.add('state-'+state);
+}
+function refreshHealthOverview(overview){
+  if(!overview) return;
+  const summary=document.getElementById('healthSummary');
+  applyState(summary,overview.level);
+  setText('healthSummaryTitle',overview.label||'Verification needed');
+  setText('healthSummaryDetail',overview.detail||'Waiting for fresh status information');
+  const cards=overview.cards||{};
+  [['vod','heroVod'],['raid','heroRaid'],['snapraid','heroSnapraid'],['disks','heroDisks']].forEach(([key,id])=>{
+    const state=cards[key];
+    if(!state) return;
+    applyState(document.getElementById(id),state.level);
+    const signal=document.getElementById(id+'Signal');
+    applyState(signal,state.level);
+    setText(id+'Signal',key==='snapraid'?(SIGNAL_LABELS[state.level]||'Unknown'):(state.label||'Unknown'));
+    setText(id+'Detail',state.detail||'');
+  });
+  const snap=cards.snapraid;
+  if(snap){
+    applyState(document.getElementById('snapProtectionPill'),snap.level);
+    setText('snapProtectionPill',snap.label||'Not verified');
+    setText('snapHeroProtection',snap.label||'Not verified');
+    const array=document.getElementById('opArrayCard');
+    if(array){
+      // An error in a saved status remains visible even when the overall
+      // parity state is a warning or verification is incomplete.
+      const h=window._latestSnapraidHealth||{};
+      applyState(array,h.errors || h.sync_in_progress ? 'bad' : (snap.level==='ok'?'ok':'unknown'));
+    }
+  }
+}
+
 async function pollObservation(){
   try {
     const r=await fetch('/api/observation',{cache:'no-store'});
@@ -219,9 +292,14 @@ async function refreshStatus(){
     const r=await fetch('/api/status');
     const j=await r.json();
     document.getElementById('updated').textContent=j.updated||'';
+    setText('healthSummaryUpdated','Updated '+(j.updated||'just now'));
     refreshDiskInventory(j.disk_inventory);
+    refreshHealthOverview(j.health_overview);
     if(j.snapraid){
       const s=j.snapraid;
+      window._latestSnapraidHealth=s.health||{};
+      const array=document.getElementById('opArrayCard');
+      if(array) applyState(array,s.health?.errors || s.health?.sync_in_progress?'bad':(j.health_overview?.cards?.snapraid?.level==='ok'?'ok':'unknown'));
       const set=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
       set('snapAdded', s.changes?.added ?? 'Unknown');
       set('snapUpdated', s.changes?.updated ?? 'Unknown');
@@ -236,27 +314,24 @@ async function refreshStatus(){
       const lastSync=s.last_sync?.display || 'Unknown';
       set('snapLastSync', lastSync);
       set('snapHeroLastSync', lastSync);
-      set('snapHeroProtection', s.protection || 'Unknown');
+      // Assessment text comes from health_overview, not the historical log result.
 
       const heroPending = s.maintenance_running
         ? (s.job?.progress ? (s.job.progress.percent+'% · '+s.job.progress.processed+' processed') : 'Maintenance job running')
         : (s.diff_ok ? ((s.pending_total ?? 'Unknown')+' pending change(s)') : 'Diff unavailable');
       set('snapHeroPending', heroPending);
 
-      const pill=document.getElementById('snapProtectionPill');
-      if(pill){
-        pill.textContent=s.protection||'Unknown';
-        pill.classList.remove('ok','warn','bad');
-        if(['Last log OK','Last log warning'].includes(s.protection)) pill.classList.add('warn');
-        else if(['Changes Pending','Syncing','Scrubbing','Repair in progress','Checking','SnapRAID busy'].includes(s.protection)) pill.classList.add('warn');
-        else pill.classList.add('bad');
-      }
 
       set('snapRawStatus', s.status_raw || 'No host snapshot collected. Dashboard does not execute SnapRAID.');
       set('snapRawDiff', s.diff_raw || 'No host snapshot collected. Dashboard does not execute SnapRAID.');
       if(s.last_sync){
         set('opSync', s.last_sync.age);
         set('opSyncDetail', s.last_sync.display+' · from '+s.last_sync.source+(s.last_sync.stale?' · overdue':''));
+        applyState(document.getElementById('opSyncCard'),s.last_sync.stale?'warn':'ok');
+      } else {
+        set('opSync','Unknown');
+        set('opSyncDetail','No verified sync recorded');
+        applyState(document.getElementById('opSyncCard'),'unknown');
       }
     }
   }catch(e){}

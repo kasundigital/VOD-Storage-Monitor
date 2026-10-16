@@ -4,6 +4,20 @@ Monitor mergerfs capacity, mdadm RAID arrays, HDD/NVMe SMART health, and externa
 
 **The web application never invokes the `snapraid` executable — not even `status` or `diff`.** SnapRAID uses an exclusive content lock for those commands, and a 60-second dashboard poll previously raced with manually launched scrubs. This release removes that source of contention entirely.
 
+## Health indicators (v0.6.6)
+
+The original dashboard layout remains unchanged; a compact server-health summary and status labels now make it easier to identify problems on desktop and mobile.
+
+- **Green / Healthy:** The individual metric was observed healthy. The overall banner turns green only if all four categories (VOD space, Docker mdadm RAID, SMART/expected disk mounts, and SnapRAID) pass their checks.
+- **Amber / Review:** A warning or maintenance task needs attention (such as low free capacity, pending changes, an overdue sync, or scrub attention).
+- **Red / Critical:** A genuinely concerning condition was detected, such as a degraded mdadm array, missing configured disk mount, failed SMART health, or failed/interrupted SnapRAID snapshot.
+- **Blue / Running:** A host maintenance operation is in progress.
+- **Gray / Unverified:** Required evidence was not collected; this does **not** mean the system is failed or protected.
+
+The SnapRAID card turns green only when there is a recent **host-captured** status/diff snapshot (no older than one hour, and collected after the last verified sync) reporting zero pending changes, no errors, and no incomplete sync. A successful historical log alone never turns it green. The dashboard does not invoke SnapRAID or silently refresh snapshots. For an accurate protection assessment, use the existing manual host snapshot script **when SnapRAID is idle**.
+
+Previous failures in Run History are explicitly labeled **historical** instead of showing a current red fault. All badge states are also displayed in words and are refreshed from the existing read-only status endpoint; the dashboard retains its storage/RAID/disk tables and monitoring-only behavior.
+
 ## What it shows
 
 - VOD and Docker storage utilization, mdadm array state and progress, and SMART health/temperatures
