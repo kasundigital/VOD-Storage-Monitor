@@ -60,6 +60,69 @@ class JournalSyncTests(unittest.TestCase):
             self.assertIn('--output=short-unix', item.args[0])
             self.assertIn('--grep=snapraid-', item.args[0])
 
+    def test_auto_lookup_uses_calendar_time_not_epoch_syntax(self):
+        # In the affected production container a manually specified calendar
+        # --since date found the sync, while automatic --since=@epoch did not.
+        epoch = datetime(2026, 10, 16, 0, 35, 1, tzinfo=timezone.utc).timestamp()
+        record = (f'{epoch:.6f} den-sm5049p-1 systemd[1]: '
+                  'snapraid-sync-resume-20261016.service: Deactivated successfully.\\n')
+        def fake_journalctl(command, **_):
+            since = [part for part in command if part.startswith('--since=')]
+            self.assertEqual(len(since), 1)
+            self.assertRegex(since[0], r'^--since=\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}
+        messages = '\n'.join([
+            line('snapraid-sync-retry.service: Main process exited, status=1/FAILURE', 100),
+            line('snapraid-sync-retry.service: Failed with result \'exit-code\'.', 200),
+            line('snapraid-manual-scrub.service: Deactivated successfully.', 300),
+            'not-json',
+        ])
+        self.assertIsNone(journal.parse_sync_completions(messages, now=1000))
+
+    def test_journal_reader_uses_read_only_queries(self):
+        stamp = 1792110901.0
+        record = line('snapraid-sync-resume-20261016.service: Deactivated successfully.', stamp)
+        with patch.object(journal.shutil, 'which', return_value='/usr/bin/journalctl'), \
+             patch.object(journal.Path, 'is_dir', return_value=True), \
+             patch.object(journal.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=record)) as run, \
+             patch.object(journal.time, 'time', return_value=stamp + 20):
+            self.assertEqual(journal.last_successful_host_sync(), stamp)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            cmd = call.args[0]
+            self.assertEqual(cmd[0], 'journalctl')
+            self.assertTrue(any(x.startswith('--directory=') for x in cmd))
+            self.assertFalse(any(x == 'snapraid' for x in cmd))
+
+    def test_new_journal_result_replaces_stale_history(self):
+        earlier = datetime(2026, 10, 11, tzinfo=timezone.utc).timestamp()
+        newer = datetime(2026, 10, 16, 0, 35, tzinfo=timezone.utc).timestamp()
+        with patch.object(monitor, 'last_run_summary', return_value={
+                 'last_sync_ok': {'ended_epoch': earlier}}), \
+             patch.object(monitor, 'last_successful_host_sync', return_value=newer), \
+             patch.object(monitor.time, 'time', return_value=newer + 3600):
+            value = monitor.snapraid_last_sync()
+        self.assertEqual(value['epoch'], newer)
+        self.assertEqual(value['source'], 'host systemd journal')
+        self.assertFalse(value['stale'])
+
+    def test_content_state_mtime_does_not_claim_success(self):
+        with patch.object(monitor, 'last_run_summary', return_value={'last_sync_ok': None}), \
+             patch.object(monitor, 'last_successful_host_sync', return_value=None):
+            self.assertIsNone(monitor.snapraid_last_sync())
+
+
+if __name__ == '__main__':
+    unittest.main()
+)
+            self.assertNotIn('@', since[0])
+            self.assertIn('--output=short-unix', command)
+            return SimpleNamespace(returncode=0, stdout=record, stderr='')
+        with patch.object(journal.shutil, 'which', return_value='/usr/bin/journalctl'), \\
+             patch.object(journal.Path, 'is_dir', return_value=True), \\
+             patch.object(journal.subprocess, 'run', side_effect=fake_journalctl), \\
+             patch.object(journal.time, 'time', return_value=epoch + 3600):
+            self.assertAlmostEqual(journal.last_successful_host_sync(), epoch)
+
     def test_failed_or_non_sync_jobs_do_not_count(self):
         messages = '\n'.join([
             line('snapraid-sync-retry.service: Main process exited, status=1/FAILURE', 100),
