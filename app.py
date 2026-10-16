@@ -5,6 +5,7 @@ from functools import wraps
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, flash
 from disk_inventory import check_inventory
+from host_sync_journal import last_successful_host_sync
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv('DB_PATH', '/data/vodmon.db'))
@@ -488,18 +489,21 @@ def snapraid_config_summary():
 
 
 def snapraid_last_sync():
-    # Prefer a sync this monitor saw finish successfully. The content file mtime is only a
-    # fallback: scrub, fix and touch rewrite it too, and sync saves it periodically mid-run.
+    """Use only observed successful host sync completions, newest first.
+
+    A content file can be modified by scrub/fix/touch and during a failed sync,
+    so its modification time cannot prove a successful parity sync.
+    """
+    candidates = []
     synced = last_run_summary().get('last_sync_ok')
     if synced and synced.get('ended_epoch'):
-        ts, source = synced['ended_epoch'], 'run history'
-    else:
-        mtimes = []
-        for p in snapraid_content_paths():
-            try: mtimes.append(Path(p).stat().st_mtime)
-            except OSError: pass
-        if not mtimes: return None
-        ts, source = max(mtimes), 'content file'
+        candidates.append((synced['ended_epoch'], 'run history'))
+    journal_ts = last_successful_host_sync()
+    if journal_ts is not None:
+        candidates.append((journal_ts, 'host systemd journal'))
+    if not candidates:
+        return None
+    ts, source = max(candidates, key=lambda item: item[0])
     age_hours = (time.time() - ts) / 3600
     return {'epoch': ts, 'iso': datetime.fromtimestamp(ts).astimezone().isoformat(),
             'display': fmt_time(ts), 'age': fmt_age(ts), 'source': source,
