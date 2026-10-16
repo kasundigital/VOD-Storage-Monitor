@@ -31,6 +31,35 @@ class JournalSyncTests(unittest.TestCase):
         ])
         self.assertEqual(journal.parse_sync_completions(records, now=past + 5000), past + 500)
 
+    def test_real_world_short_unix_systemd_success(self):
+        # Corresponds to the observed Oct 15 19:35:01 CDT host service.
+        epoch = datetime(2026, 10, 16, 0, 35, 1, tzinfo=timezone.utc).timestamp()
+        lines = '\n'.join([
+            f'{epoch - 60:.6f} den-sm5049p-1 systemd[1]: snapraid-sync-bg.service: Failed with result \'exit-code\'.',
+            f'{epoch:.6f} den-sm5049p-1 systemd[1]: snapraid-sync-resume-20261016.service: Deactivated successfully.',
+            f'{epoch + 10:.6f} den-sm5049p-1 snapraid[2238005]: Everything OK',
+            f'{epoch + 20:.6f} den-sm5049p-1 systemd[1]: snapraid-scrub.service: Deactivated successfully.',
+            f'{epoch + 30:.6f} den-sm5049p-1 systemd[123]: snapraid-sync-fake.service: Deactivated successfully.',
+        ])
+        self.assertEqual(journal.parse_sync_completions(lines, now=epoch + 60), epoch)
+
+    def test_short_unix_record_from_journal_command(self):
+        epoch = datetime(2026, 10, 16, 0, 35, 1, tzinfo=timezone.utc).timestamp()
+        output = f'{epoch:.6f} den-sm5049p-1 systemd[1]: snapraid-sync-resume-20261016.service: Deactivated successfully.\\n'
+        # Simulate a host journal that returned only the persistent directory.
+        def fake_run(cmd, **kwargs):
+            if cmd[1].endswith('/host/var/log/journal'):
+                return SimpleNamespace(returncode=0, stdout=output)
+            return SimpleNamespace(returncode=0, stdout='')
+        with patch.object(journal.shutil, 'which', return_value='/usr/bin/journalctl'), \
+             patch.object(journal.Path, 'is_dir', return_value=True), \
+             patch.object(journal.subprocess, 'run', side_effect=fake_run) as run, \
+             patch.object(journal.time, 'time', return_value=epoch + 60):
+            self.assertEqual(journal.last_successful_host_sync(), epoch)
+        for item in run.call_args_list:
+            self.assertIn('--output=short-unix', item.args[0])
+            self.assertIn('--grep=snapraid-', item.args[0])
+
     def test_failed_or_non_sync_jobs_do_not_count(self):
         messages = '\n'.join([
             line('snapraid-sync-retry.service: Main process exited, status=1/FAILURE', 100),
