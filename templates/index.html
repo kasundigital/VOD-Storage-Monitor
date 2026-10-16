@@ -70,6 +70,15 @@
         <span class="maintenance-task-status">{{task.label}}</span>
       </div>
       <p>{{task.detail}}</p>
+      {% if task.schedule %}
+      <div class="maintenance-cron {{'maintenance-cron-configured' if task.schedule.status == 'configured' else ''}}">
+        <b>{{task.schedule.label}}</b>
+        <span>{{task.schedule.next_display}}</span>
+        {% if task.schedule.status == 'configured' %}
+        <small>{{task.schedule.source}} · {{task.schedule.expression}} · {{task.schedule.timezone}}</small>
+        {% endif %}
+      </div>
+      {% endif %}
       <div class="maintenance-task-next"><b>Next step:</b> {{task.next_step}}</div>
       <small class="maintenance-task-source">{{task.source}}</small>
     </div>
@@ -237,6 +246,10 @@ function refreshMaintenanceTasks(data){
       '<div class="maintenance-task-top"><b class="maintenance-task-title">'+esc(t.title)+'</b>'+
       '<span class="maintenance-task-status">'+esc(t.label)+'</span></div>'+
       '<p>'+esc(t.detail)+'</p>'+
+      (t.schedule?'<div class="maintenance-cron'+(t.schedule.status==='configured'?' maintenance-cron-configured':'')+'">'+
+        '<b>'+esc(t.schedule.label)+'</b><span>'+esc(t.schedule.next_display)+'</span>'+
+        (t.schedule.status==='configured'?'<small>'+esc(t.schedule.source)+' · '+esc(t.schedule.expression)+' · '+esc(t.schedule.timezone)+'</small>':'')+
+        '</div>':'')+
       '<div class="maintenance-task-next"><b>Next step:</b> '+esc(t.next_step)+'</div>'+
       '<small class="maintenance-task-source">'+esc(t.source)+'</small>'+
       '</div>';
