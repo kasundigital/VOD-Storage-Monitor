@@ -14,7 +14,7 @@ import time
 
 from croniter import croniter
 
-ROOT_CRONTAB = Path('/host/cron/root')
+ROOT_CRONTAB = Path('/host/cron/spool/root')
 SYSTEM_CRONTAB = Path('/host/cron/etc-crontab')
 SYSTEM_CRON_D = Path('/host/cron/cron.d')
 VALID_FILENAME = re.compile(r'^[A-Za-z0-9_-]+$')
