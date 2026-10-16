@@ -25,6 +25,10 @@ services:
       # Read host systemd-run sync completion records without executing SnapRAID.
       - /var/log/journal:/host/var/log/journal:ro
       - /run/log/journal:/host/run/log/journal:ro
+      # Host cron schedules: read-only source for next Sync/Scrub time.
+      - /etc/crontab:/host/cron/etc-crontab:ro
+      - /etc/cron.d:/host/cron/cron.d:ro
+      - /var/spool/cron/crontabs:/host/cron/spool:ro
       - /etc/hostname:/host/etc/hostname:ro
       - /run/udev:/run/udev:ro
       - /proc:/host/proc:ro
