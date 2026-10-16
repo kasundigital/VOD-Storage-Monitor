@@ -4,6 +4,21 @@ Monitor mergerfs capacity, mdadm RAID arrays, HDD/NVMe SMART health, and externa
 
 **The web application never invokes the `snapraid` executable — not even `status` or `diff`.** SnapRAID uses an exclusive content lock for those commands, and a 60-second dashboard poll previously raced with manually launched scrubs. This release removes that source of contention entirely.
 
+## Pending maintenance and next host cron runs (v0.6.7)
+
+The **Pending Maintenance Tasks** section is a **read-only display**, not a control panel. It reports Sync, Scrub, status/diff snapshot refresh, and disk health tasks using the latest captured monitoring information. A task can be Due, Waiting, Running, Blocked, Unknown, or Done; a completed status reflects saved observations and is not a live guarantee.
+
+Sync and Scrub task cards also show their **next scheduled cron run** (weekday, date, clock time and timezone), source crontab and original expression, if a matching job is found. The monitor reads the host's **root crontab**, `/etc/crontab`, and matching files in `/etc/cron.d` through Docker **read-only binds**, and calculates the next time with `croniter`. It does not edit crontabs, install jobs, run programs, or expose the cron command line in the web API. The time is a schedule prediction, not confirmation cron is active or the job will succeed. Macros such as `@weekly` are supported; `@reboot` has no predictable next run.
+
+Host cron paths used by the updated Compose file:
+- `/var/spool/cron/crontabs:/host/cron/spool:ro`
+- `/etc/crontab:/host/cron/etc-crontab:ro`
+- `/etc/cron.d:/host/cron/cron.d:ro`
+
+Set `TZ=America/Chicago` in the monitor's `.env` on the `den-sm5049p-1` host for local time display. If no matching cron entry exists, the dashboard says **Not scheduled**; if cron files cannot be read, it says **Schedule unavailable**. This display does not cover indirect jobs hidden in shell scripts or unrelated systemd timers. To inspect existing cron on the Ubuntu host, run `sudo crontab -l` and `sudo grep -Rni snapraid /etc/crontab /etc/cron.d 2>/dev/null`. Use `sudo crontab -e` only if you intend to change a schedule; make sure you understand the existing maintenance script before editing it.
+
+**Manual maintenance order (host terminal only):** confirm configured mounts and no active SnapRAID job, let media writes finish, run a host SnapRAID **sync** and wait for success, then a controlled **partial scrub**, and lastly capture a new status/diff snapshot. Never overlap maintenance jobs or automatically run them from the dashboard. If media managers keep importing and renaming files, a sync can fail with file-size-change errors.
+
 ## Health indicators (v0.6.6)
 
 The original dashboard layout remains unchanged; a compact server-health summary and status labels now make it easier to identify problems on desktop and mobile.

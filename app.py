@@ -6,6 +6,8 @@ from pathlib import Path
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, flash
 from disk_inventory import check_inventory
 from health_status import assess_health
+from maintenance_tasks import pending_maintenance
+from cron_schedule import host_cron_schedules
 from host_sync_journal import last_successful_host_sync
 
 APP_DIR = Path(__file__).resolve().parent
@@ -20,7 +22,7 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
 SYNC_STALE_HOURS = float(os.getenv('SYNC_STALE_HOURS', '26'))
 SCRUB_STALE_DAYS = float(os.getenv('SCRUB_STALE_DAYS', '14'))
-APP_VERSION = os.getenv('APP_VERSION', '0.6.6')
+APP_VERSION = os.getenv('APP_VERSION', '0.6.7')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -104,6 +106,10 @@ def empty_dashboard():
         'app_version': APP_VERSION,
         'build_sha': BUILD_SHA[:7] if BUILD_SHA else 'dev',
         'disk_health': {'total':0,'healthy':0,'failed':0,'warning':0,'other':0,'standby':0,'max_temp':None},
+        'cron_schedule': {'available': False, 'timezone': os.getenv('TZ','UTC'), 'jobs': [],
+                          'next_by_operation': {}, 'warnings': [], 'note': 'Waiting for host cron data'},
+        'maintenance_tasks': {'title': 'Collecting maintenance data', 'attention': 0,
+                              'counts': {}, 'items': [], 'source_note': 'Waiting for host observations'},
         'health_overview': {'level': 'unknown', 'label': 'Collecting health data',
                             'detail': 'Checking storage, RAID, SMART and SnapRAID.',
                             'cards': {k: {'level': 'unknown', 'label': 'Loading', 'detail': ''}
@@ -874,6 +880,8 @@ def collect(force=False):
         h=data['disk_health']
         h['other']=h['total']-h['healthy']-h['failed']-h['warning']
         data['health_overview']=assess_health(data)
+        data['cron_schedule']=host_cron_schedules()
+        data['maintenance_tasks']=pending_maintenance(data, cron=data['cron_schedule'])
         cache['data']=data; cache['updated']=fmt_time(time.time())
         return True
     finally:

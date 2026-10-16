@@ -137,3 +137,41 @@
   .health-summary strong{font-size:17px}
 }
 @media(prefers-reduced-motion:reduce){.health-summary,.health-card,.signal-pill{transition:none}}
+
+
+/* Pending maintenance checklist - informational only, no run controls. */
+.maintenance-panel{margin-top:14px}
+.maintenance-panel .panel-title{gap:12px;flex-wrap:wrap}
+.maintenance-tally{font-size:12px;font-weight:750;color:var(--muted)}
+.maintenance-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:16px}
+.maintenance-task{--task:var(--muted);--task-bg:rgba(148,163,184,.06);
+  display:flex;flex-direction:column;gap:8px;min-width:0;
+  padding:14px;border:1px solid var(--line);border-left:3px solid var(--task);
+  border-radius:11px;background:linear-gradient(120deg,var(--task-bg),rgba(255,255,255,.013))}
+.maintenance-task.task-due{--task:var(--warn);--task-bg:rgba(245,196,81,.07)}
+.maintenance-task.task-blocked{--task:var(--bad);--task-bg:rgba(255,107,107,.08)}
+.maintenance-task.task-running{--task:var(--accent);--task-bg:rgba(110,168,254,.08)}
+.maintenance-task.task-waiting{--task:var(--warn);--task-bg:rgba(245,196,81,.045)}
+.maintenance-task.task-done{--task:var(--good);--task-bg:rgba(61,220,151,.055)}
+.maintenance-task.task-unknown{--task:var(--muted);--task-bg:rgba(148,163,184,.04)}
+.maintenance-task-top{display:flex;align-items:flex-start;gap:8px;justify-content:space-between;flex-wrap:wrap}
+.maintenance-task-title{font-size:14px}
+.maintenance-task-status{font-size:11px;font-weight:800;color:var(--task);
+  border:1px solid var(--task);border-radius:100px;padding:3px 8px;white-space:nowrap}
+.maintenance-task p{color:var(--text);font-size:12px;margin:0;line-height:1.5}
+.maintenance-task-next{font-size:12px;line-height:1.5;margin-top:auto}
+.maintenance-task-next b{color:var(--task)}
+.maintenance-task-source{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.maintenance-empty{padding:12px;color:var(--muted)}
+.maintenance-note{border-top:1px solid var(--line);padding:10px 16px;color:var(--muted);font-size:11px}
+@media(max-width:1050px){.maintenance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){.maintenance-grid{grid-template-columns:1fr;padding:12px}}
+
+/* Next scheduled host cron run, calculated from read-only crontab files. */
+.maintenance-cron{display:flex;flex-direction:column;gap:2px;padding:9px 11px;
+  border:1px solid var(--line);border-radius:8px;background:rgba(148,163,184,.06)}
+.maintenance-cron b{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.maintenance-cron>span{font-size:13px;font-weight:750;color:var(--muted);overflow-wrap:anywhere}
+.maintenance-cron small{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.maintenance-cron-configured{border-color:rgba(110,168,254,.33);background:rgba(110,168,254,.075)}
+.maintenance-cron-configured>span{color:#bfd9ff}

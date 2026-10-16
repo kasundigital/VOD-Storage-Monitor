@@ -56,6 +56,39 @@
 </div>
 </section>
 
+
+<section class="panel maintenance-panel" aria-labelledby="maintenanceTitle">
+  <div class="panel-title">
+    <div><h2 id="maintenanceTitle">Pending Maintenance Tasks</h2><span class="subtle" id="maintenanceSummary">{{data.maintenance_tasks.title}}</span></div>
+    <span class="maintenance-tally" id="maintenanceAttention">{{data.maintenance_tasks.attention}} requiring attention</span>
+  </div>
+  <div class="maintenance-grid" id="maintenanceItems" aria-live="polite">
+    {% for task in data.maintenance_tasks['items'] %}
+    <div class="maintenance-task task-{{task.status}}">
+      <div class="maintenance-task-top">
+        <b class="maintenance-task-title">{{task.title}}</b>
+        <span class="maintenance-task-status">{{task.label}}</span>
+      </div>
+      <p>{{task.detail}}</p>
+      {% if task.schedule %}
+      <div class="maintenance-cron {{'maintenance-cron-configured' if task.schedule.status == 'configured' else ''}}">
+        <b>{{task.schedule.label}}</b>
+        <span>{{task.schedule.next_display}}</span>
+        {% if task.schedule.status == 'configured' %}
+        <small>{{task.schedule.source}} · {{task.schedule.expression}} · {{task.schedule.timezone}}</small>
+        {% endif %}
+      </div>
+      {% endif %}
+      <div class="maintenance-task-next"><b>Next step:</b> {{task.next_step}}</div>
+      <small class="maintenance-task-source">{{task.source}}</small>
+    </div>
+    {% else %}
+    <p class="maintenance-empty">Gathering maintenance information…</p>
+    {% endfor %}
+  </div>
+  <div class="maintenance-note" id="maintenanceNote">{{data.maintenance_tasks.source_note}}</div>
+</section>
+
 <section class="two-col"><div class="panel"><div class="panel-title"><h2>RAID Arrays</h2></div><div class="table-wrap"><table><thead><tr><th>Array</th><th>Level</th><th>Status</th><th>Activity</th></tr></thead><tbody>{% for r in data.raid %}<tr><td>{{r.name}}</td><td>{{r.level}}</td><td><span class="pill {{'ok' if r.healthy else 'bad'}}">{{'Healthy' if r.healthy else 'Degraded'}}</span></td><td>{% if r.progress %}{{r.progress.type}} {{r.progress.percent}}%{% else %}Idle{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>
 <div class="panel snap-panel">
   <div class="panel-title">
@@ -197,6 +230,32 @@ waitForInitialData();
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const cap=v=>v?String(v).charAt(0).toUpperCase()+String(v).slice(1):'';
 const setText=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
+
+const MAINTENANCE_STATUSES=['due','waiting','running','blocked','unknown','done'];
+function refreshMaintenanceTasks(data){
+  if(!data) return;
+  setText('maintenanceSummary',data.title||'Maintenance checklist');
+  setText('maintenanceAttention',String(data.attention??0)+' requiring attention');
+  setText('maintenanceNote',data.source_note||'Read-only recommendations from host observations.');
+  const target=document.getElementById('maintenanceItems');
+  if(!target) return;
+  const tasks=Array.isArray(data.items)?data.items:[];
+  target.innerHTML=tasks.map(t=>{
+    const status=MAINTENANCE_STATUSES.includes(t.status)?t.status:'unknown';
+    return '<div class="maintenance-task task-'+status+'">'+
+      '<div class="maintenance-task-top"><b class="maintenance-task-title">'+esc(t.title)+'</b>'+
+      '<span class="maintenance-task-status">'+esc(t.label)+'</span></div>'+
+      '<p>'+esc(t.detail)+'</p>'+
+      (t.schedule?'<div class="maintenance-cron'+(t.schedule.status==='configured'?' maintenance-cron-configured':'')+'">'+
+        '<b>'+esc(t.schedule.label)+'</b><span>'+esc(t.schedule.next_display)+'</span>'+
+        (t.schedule.status==='configured'?'<small>'+esc(t.schedule.source)+' · '+esc(t.schedule.expression)+' · '+esc(t.schedule.timezone)+'</small>':'')+
+        '</div>':'')+
+      '<div class="maintenance-task-next"><b>Next step:</b> '+esc(t.next_step)+'</div>'+
+      '<small class="maintenance-task-source">'+esc(t.source)+'</small>'+
+      '</div>';
+  }).join('')||'<p class="maintenance-empty">Gathering maintenance information…</p>';
+}
+
 const HEALTH_STATES=['ok','warn','bad','unknown','busy'];
 const SIGNAL_LABELS={ok:'Good',warn:'Review',bad:'Critical',unknown:'Unverified',busy:'Running'};
 function applyState(element,level){
@@ -295,6 +354,7 @@ async function refreshStatus(){
     setText('healthSummaryUpdated','Updated '+(j.updated||'just now'));
     refreshDiskInventory(j.disk_inventory);
     refreshHealthOverview(j.health_overview);
+    refreshMaintenanceTasks(j.maintenance_tasks);
     if(j.snapraid){
       const s=j.snapraid;
       window._latestSnapraidHealth=s.health||{};
