@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 
 # Only dedicated sync services, not generic maintenance units which might scrub.
@@ -66,14 +67,17 @@ def last_successful_host_sync():
         return None
     latest = None
     journal_dirs = os.getenv('HOST_JOURNAL_DIRS', DEFAULT_JOURNAL_DIRS).split(':')
-    cutoff = int(time.time() - 180 * 86400)
+    # The Ubuntu host accepts ISO wall-clock dates; relying on --since=@epoch
+    # caused this query to return no entries while an otherwise identical
+    # journalctl --since=2026-10-15 command returned a verified completion.
+    cutoff = datetime.fromtimestamp(time.time() - 180 * 86400).strftime('%Y-%m-%d %H:%M:%S')
     for directory in dict.fromkeys(journal_dirs):
         if not directory or not Path(directory).is_dir():
             continue
         try:
             result = subprocess.run(
                 ['journalctl', '--directory=' + directory, '--no-pager',
-                 '--output=short-unix', '--since=@' + str(cutoff),
+                 '--output=short-unix', '--since=' + cutoff,
                  '--grep=snapraid-', '--lines=300'],
                 capture_output=True, text=True, check=False, timeout=8,
             )
