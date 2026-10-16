@@ -9,7 +9,7 @@ Monitor mergerfs capacity, mdadm RAID arrays, HDD/NVMe SMART health, and externa
 - VOD and Docker storage utilization, mdadm array state and progress, and SMART health/temperatures
 - Running SnapRAID jobs detected from host `/proc`, with start time, elapsed time and progress if the log has it
 - **Last run** (operation, OK / Warning / Error, when it ended, how long it took) and **last failure**
-- **Last sync** age, highlighted when older than `SYNC_STALE_HOURS` (default 26h)
+- **Last verified sync** age, including successful host systemd-run sync units; highlighted when older than `SYNC_STALE_HOURS` (default 26h)
 - Last existing sync log outcome (`summary:exit:ok` means **the observed log** ended OK)
 - From the host snapshot: scrub age (newest/oldest block), % never scrubbed, array errors and interrupted syncs (highlighted when the newest scrub is older than `SCRUB_STALE_DAYS`, default 14)
 - SMART reallocated/pending/uncorrectable sectors; sleeping disks are not woken up (`smartctl -n standby`)
@@ -81,7 +81,17 @@ A background watcher looks for `snapraid` processes on the host every 10 seconds
 
 Log paths may be globs such as `/docker/snapraid/logs/*.log`; the newest matching file is used. If no log was written during the run, it is recorded as **Finished** (result unknown). Jobs that start and end while the monitor is stopped are not recorded.
 
-"Last sync" uses the last sync recorded as OK in this history. Until one exists it falls back to the content file time, which scrub/fix also update.
+"Last sync" uses the **newest verified successful sync** from run history or host systemd journal. The dashboard reads dedicated `snapraid-*sync*.service: Deactivated successfully.` completions, including units created with `systemd-run --unit=snapraid-sync-resume-20261016 ...`. A failed or incomplete sync is never counted. The journal is read-only and requires the two host journal bind mounts in the updated Compose file. If host journals are unavailable and no successful sync was seen by the monitor, the last successful sync is **Unknown**, not the misleading mtime of `snapraid.content` (which also changes during scrub/fix and failed syncs).
+
+**Important:** The "Scrub" box reports the age of blocks last **scrubbed**, not the age of the last **sync**. A new successful sync does not reset that scrub age. A manually captured status/diff snapshot can remain old until the host snapshot script is run again when no SnapRAID process is active.
+
+### Journal-backed successful sync dates (v0.6.2)
+
+The Docker image includes `journalctl` and the Compose file mounts both `/var/log/journal` and `/run/log/journal` **read-only**, because Ubuntu may use persistent or volatile journals. The monitor queries at most the latest 100 matching records in each location, limited to the last 180 days. It does not execute `snapraid`, modify host logs, or run any maintenance. Only dedicated sync services that systemd reports as successfully deactivated are treated as verified. Ordinary syncs seen by the process watcher and confirmed by a contemporaneous SnapRAID log still count.
+
+After updating the Compose file and image, verify the source beneath "Last sync" reads `host systemd journal` if a matching completion exists; it may otherwise show `run history` or `Unknown`. The prior fixed `SNAPRAID_LOG_PATH` can still display historical recovery logs and need not be the most recent run. The dashboard's cache normally refreshes every 60 seconds. A dashboard update does **not** run a new parity sync.
+
+Existing installations must use the updated Compose file to add the new read-only journal mounts (updating only the image is insufficient). Keep `./data` and `.env` intact.
 
 ## Updating an existing server
 
