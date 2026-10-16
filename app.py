@@ -5,6 +5,7 @@ from functools import wraps
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, flash
 from disk_inventory import check_inventory
+from health_status import assess_health
 from host_sync_journal import last_successful_host_sync
 
 APP_DIR = Path(__file__).resolve().parent
@@ -102,7 +103,11 @@ def empty_dashboard():
         'hostname': (Path('/host/etc/hostname').read_text().strip() if Path('/host/etc/hostname').exists() else os.uname().nodename),
         'app_version': APP_VERSION,
         'build_sha': BUILD_SHA[:7] if BUILD_SHA else 'dev',
-        'disk_health': {'total':0,'healthy':0,'failed':0,'warning':0,'other':0,'standby':0,'max_temp':None}
+        'disk_health': {'total':0,'healthy':0,'failed':0,'warning':0,'other':0,'standby':0,'max_temp':None},
+        'health_overview': {'level': 'unknown', 'label': 'Collecting health data',
+                            'detail': 'Checking storage, RAID, SMART and SnapRAID.',
+                            'cards': {k: {'level': 'unknown', 'label': 'Loading', 'detail': ''}
+                                      for k in ('vod', 'raid', 'snapraid', 'disks')}}
     }
 
 cache = {'data': empty_dashboard(), 'updated': None, 'collecting': False}
@@ -868,6 +873,7 @@ def collect(force=False):
         }
         h=data['disk_health']
         h['other']=h['total']-h['healthy']-h['failed']-h['warning']
+        data['health_overview']=assess_health(data)
         cache['data']=data; cache['updated']=fmt_time(time.time())
         return True
     finally:
