@@ -22,6 +22,9 @@ services:
       - ./data:/data
       - /etc/snapraid.conf:/etc/snapraid.conf:ro
       - /var/lib/snapraid:/var/lib/snapraid:ro
+      # Read host systemd-run sync completion records without executing SnapRAID.
+      - /var/log/journal:/host/var/log/journal:ro
+      - /run/log/journal:/host/run/log/journal:ro
       - /etc/hostname:/host/etc/hostname:ro
       - /run/udev:/run/udev:ro
       - /proc:/host/proc:ro
