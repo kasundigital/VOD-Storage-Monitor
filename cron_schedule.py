@@ -36,6 +36,15 @@ def _operation(command):
         args = shlex.split(command, comments=False)
     except ValueError:
         return None
+    if not args:
+        return None
+    # Do not mistake an unrelated program such as echo/grep for a scheduled
+    # SnapRAID job merely because its arguments contain "snapraid sync".
+    first = Path(args[0]).name
+    allowed = {'snapraid-maintenance.sh', 'snapraid'}
+    wrappers = {'flock', 'nice', 'ionice', 'timeout', 'env', 'bash', 'sh'}
+    if first not in allowed | wrappers:
+        return None
     for i, token in enumerate(args):
         if Path(token).name not in ('snapraid-maintenance.sh', 'snapraid'):
             continue
