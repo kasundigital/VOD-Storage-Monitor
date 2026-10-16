@@ -63,7 +63,7 @@
     <span class="maintenance-tally" id="maintenanceAttention">{{data.maintenance_tasks.attention}} requiring attention</span>
   </div>
   <div class="maintenance-grid" id="maintenanceItems" aria-live="polite">
-    {% for task in data.maintenance_tasks.items %}
+    {% for task in data.maintenance_tasks['items'] %}
     <div class="maintenance-task task-{{task.status}}">
       <div class="maintenance-task-top">
         <b class="maintenance-task-title">{{task.title}}</b>
