@@ -22,7 +22,7 @@ DEFAULT_JOURNAL_DIRS = '/host/var/log/journal:/host/run/log/journal'
 # journalctl -o short-unix includes the original host service identity and an
 # unambiguous UNIX epoch. It avoids depending on optional JSON journal fields.
 _SHORT_UNIX = re.compile(
-    r'^\\s*(?P<timestamp>\\d+(?:\\.\\d+)?)\\s+\\S+\\s+systemd\\[1\\]:\\s+(?P<message>.+)$'
+    r'^\s*(?P<timestamp>\d+(?:\.\d+)?)\s+\S+\s+systemd\[1\]:\s+(?P<message>.+)$'
 )
 
 
