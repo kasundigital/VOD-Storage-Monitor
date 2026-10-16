@@ -58,6 +58,11 @@ class HealthSummaryTests(unittest.TestCase):
         data['snapraid']['snapshot_time']=datetime.fromtimestamp(NOW-7200,timezone.utc).isoformat()
         self.assertEqual(assess_health(data,now=NOW)['cards']['snapraid']['level'],'unknown')
 
+    def test_snapshot_from_before_sync_cannot_be_green(self):
+        data=clean_data()
+        data['snapraid']['snapshot_time']=datetime.fromtimestamp(NOW-600,timezone.utc).isoformat()
+        self.assertEqual(assess_health(data,now=NOW)['cards']['snapraid']['level'],'unknown')
+
     def test_sync_success_but_no_host_timestamp_is_unknown(self):
         data=clean_data()
         data['snapraid']['last_sync']=None
