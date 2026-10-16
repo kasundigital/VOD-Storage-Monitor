@@ -166,3 +166,12 @@
 .maintenance-note{border-top:1px solid var(--line);padding:10px 16px;color:var(--muted);font-size:11px}
 @media(max-width:1050px){.maintenance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.maintenance-grid{grid-template-columns:1fr;padding:12px}}
+
+/* Next scheduled host cron run, calculated from read-only crontab files. */
+.maintenance-cron{display:flex;flex-direction:column;gap:2px;padding:9px 11px;
+  border:1px solid var(--line);border-radius:8px;background:rgba(148,163,184,.06)}
+.maintenance-cron b{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.maintenance-cron>span{font-size:13px;font-weight:750;color:var(--muted);overflow-wrap:anywhere}
+.maintenance-cron small{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.maintenance-cron-configured{border-color:rgba(110,168,254,.33);background:rgba(110,168,254,.075)}
+.maintenance-cron-configured>span{color:#bfd9ff}
