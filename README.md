@@ -85,7 +85,11 @@ Log paths may be globs such as `/docker/snapraid/logs/*.log`; the newest matchin
 
 **Important:** The "Scrub" box reports the age of blocks last **scrubbed**, not the age of the last **sync**. A new successful sync does not reset that scrub age. A manually captured status/diff snapshot can remain old until the host snapshot script is run again when no SnapRAID process is active.
 
-### Journal-backed successful sync dates (v0.6.2)
+### Journal-backed successful sync dates (v0.6.3)
+
+In v0.6.3 the monitor uses host `journalctl --output=short-unix` entries to recognize the exact `systemd[1]` success message. This avoids silently missing a completion when journal JSON fields are unavailable or differ across systemd versions. A broad read-only `snapraid-` search is filtered by the service name and PID 1 in application code. Failed jobs and scrub runs are not treated as a completed sync.
+
+**Timezone:** Set `TZ` in your own `.env` to the timezone of the monitored host. For `den-sm5049p-1`, set `TZ=America/Chicago` (not `America/New_York`) to match the host's CDT/CST clock. Changing timezone alters display formatting only and does not run SnapRAID.
 
 The Docker image includes `journalctl` and the Compose file mounts both `/var/log/journal` and `/run/log/journal` **read-only**, because Ubuntu may use persistent or volatile journals. The monitor queries at most the latest 100 matching records in each location, limited to the last 180 days. It does not execute `snapraid`, modify host logs, or run any maintenance. Only dedicated sync services that systemd reports as successfully deactivated are treated as verified. Ordinary syncs seen by the process watcher and confirmed by a contemporaneous SnapRAID log still count.
 
