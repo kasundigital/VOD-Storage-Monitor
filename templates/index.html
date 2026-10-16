@@ -228,7 +228,10 @@ function refreshHealthOverview(overview){
     setText('snapHeroProtection',snap.label||'Not verified');
     const array=document.getElementById('opArrayCard');
     if(array){
-      applyState(array,snap.level==='ok'?'ok':'unknown');
+      // An error in a saved status remains visible even when the overall
+      // parity state is a warning or verification is incomplete.
+      const h=window._latestSnapraidHealth||{};
+      applyState(array,h.errors || h.sync_in_progress ? 'bad' : (snap.level==='ok'?'ok':'unknown'));
     }
   }
 }
@@ -294,6 +297,9 @@ async function refreshStatus(){
     refreshHealthOverview(j.health_overview);
     if(j.snapraid){
       const s=j.snapraid;
+      window._latestSnapraidHealth=s.health||{};
+      const array=document.getElementById('opArrayCard');
+      if(array) applyState(array,s.health?.errors || s.health?.sync_in_progress?'bad':(j.health_overview?.cards?.snapraid?.level==='ok'?'ok':'unknown'));
       const set=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
       set('snapAdded', s.changes?.added ?? 'Unknown');
       set('snapUpdated', s.changes?.updated ?? 'Unknown');
