@@ -85,7 +85,9 @@ Log paths may be globs such as `/docker/snapraid/logs/*.log`; the newest matchin
 
 **Important:** The "Scrub" box reports the age of blocks last **scrubbed**, not the age of the last **sync**. A new successful sync does not reset that scrub age. A manually captured status/diff snapshot can remain old until the host snapshot script is run again when no SnapRAID process is active.
 
-### Journal-backed successful sync dates (v0.6.3)
+### Journal-backed successful sync dates (v0.6.4)
+
+Starting in v0.6.4, the journal reader uses an ISO calendar-time `--since` filter rather than an epoch-style query. This matches the working host manual diagnostics for the October 15 successful sync and prevents the sync age from silently reverting to an older monitor-history entry when the journal query returns no results.
 
 In v0.6.3 the monitor uses host `journalctl --output=short-unix` entries to recognize the exact `systemd[1]` success message. This avoids silently missing a completion when journal JSON fields are unavailable or differ across systemd versions. A broad read-only `snapraid-` search is filtered by the service name and PID 1 in application code. Failed jobs and scrub runs are not treated as a completed sync.
 

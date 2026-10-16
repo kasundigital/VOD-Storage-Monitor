@@ -60,6 +60,23 @@ class JournalSyncTests(unittest.TestCase):
             self.assertIn('--output=short-unix', item.args[0])
             self.assertIn('--grep=snapraid-', item.args[0])
 
+    def test_auto_lookup_uses_calendar_since_argument(self):
+        epoch = datetime(2026, 10, 16, 0, 35, 1, tzinfo=timezone.utc).timestamp()
+        output = (f'{epoch:.6f} den-sm5049p-1 systemd[1]: '
+                  'snapraid-sync-resume-20261016.service: Deactivated successfully.')
+        def pretend_journalctl(command, **kwargs):
+            since = [x for x in command if x.startswith('--since=')]
+            self.assertEqual(len(since), 1)
+            self.assertNotIn('@', since[0])
+            self.assertEqual(len(since[0]), len('--since=2026-04-18 00:00:00'))
+            self.assertIn('--output=short-unix', command)
+            return SimpleNamespace(returncode=0, stdout=output, stderr='')
+        with (patch.object(journal.shutil, 'which', return_value='/usr/bin/journalctl'),
+              patch.object(journal.Path, 'is_dir', return_value=True),
+              patch.object(journal.subprocess, 'run', side_effect=pretend_journalctl),
+              patch.object(journal.time, 'time', return_value=epoch + 3600)):
+            self.assertAlmostEqual(journal.last_successful_host_sync(), epoch)
+
     def test_failed_or_non_sync_jobs_do_not_count(self):
         messages = '\n'.join([
             line('snapraid-sync-retry.service: Main process exited, status=1/FAILURE', 100),
