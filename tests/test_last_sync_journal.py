@@ -45,7 +45,7 @@ class JournalSyncTests(unittest.TestCase):
 
     def test_short_unix_record_from_journal_command(self):
         epoch = datetime(2026, 10, 16, 0, 35, 1, tzinfo=timezone.utc).timestamp()
-        output = f'{epoch:.6f} den-sm5049p-1 systemd[1]: snapraid-sync-resume-20261016.service: Deactivated successfully.\\n'
+        output = f'{epoch:.6f} den-sm5049p-1 systemd[1]: snapraid-sync-resume-20261016.service: Deactivated successfully.\n'
         # Simulate a host journal that returned only the persistent directory.
         def fake_run(cmd, **kwargs):
             if cmd[1].endswith('/host/var/log/journal'):
