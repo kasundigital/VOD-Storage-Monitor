@@ -22,7 +22,7 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
 SYNC_STALE_HOURS = float(os.getenv('SYNC_STALE_HOURS', '26'))
 SCRUB_STALE_DAYS = float(os.getenv('SCRUB_STALE_DAYS', '14'))
-APP_VERSION = os.getenv('APP_VERSION', '0.6.6')
+APP_VERSION = os.getenv('APP_VERSION', '0.6.7')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
