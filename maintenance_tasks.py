@@ -26,7 +26,7 @@ def _task(id, title, status, label, detail, next_step, source, priority):
                 next_step=next_step, source=source, priority=priority)
 
 
-def pending_maintenance(data, now=None):
+def pending_maintenance(data, now=None, cron=None):
     """Build the currently observed to-do list from collected monitor data.
 
     Statuses: due, waiting, running, blocked, unknown, done.
@@ -163,6 +163,30 @@ def pending_maintenance(data, now=None):
     tasks.append(snapshot_task)
 
     order = {'blocked': 0, 'due': 1, 'running': 2, 'waiting': 3, 'unknown': 4, 'done': 5}
+    # Link advisory Sync/Scrub items to the host's existing cron schedule.
+    # No schedule is installed, changed, or executed by the monitor.
+    cron = cron or {}
+    next_jobs = cron.get('next_by_operation') or {}
+    for task in tasks:
+        if task['id'] not in ('sync', 'scrub'):
+            continue
+        scheduled = next_jobs.get(task['id'])
+        if scheduled:
+            task['schedule'] = {
+                'status': 'configured', 'label': 'Next cron run',
+                'next_display': scheduled['next_display'],
+                'next_iso': scheduled['next_iso'],
+                'expression': scheduled['expression'],
+                'timezone': scheduled['timezone'],
+                'source': scheduled['source']
+            }
+        elif cron.get('available'):
+            task['schedule'] = {'status': 'none', 'label': 'No matching cron job',
+                                'next_display': 'Not scheduled', 'source': 'Host crontab'}
+        else:
+            task['schedule'] = {'status': 'unknown', 'label': 'Schedule unavailable',
+                                'next_display': 'Could not read host cron',
+                                'source': 'Host crontab'}
     tasks.sort(key=lambda item: (order[item['status']], item['priority'], item['id']))
     counts = {state: sum(t['status'] == state for t in tasks) for state in order}
     actionable = counts['blocked'] + counts['due']
@@ -177,4 +201,4 @@ def pending_maintenance(data, now=None):
     else:
         title = 'No immediate maintenance tasks'
     return {'title': title, 'attention': actionable, 'counts': counts,
-            'items': tasks, 'source_note': 'Tasks are recommendations from host observations and saved snapshots, not scheduled jobs.'}
+            'items': tasks, 'source_note': 'Read-only advice. Next-run dates are calculated from mounted host crontabs; actual execution is not guaranteed.'}
