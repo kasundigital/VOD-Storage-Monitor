@@ -40,7 +40,7 @@
   <small class="card-caption" id="heroRaidDetail">{{data.health_overview.cards.raid.detail}}</small>
 </div>
 <div class="card health-card state-{{data.health_overview.cards.snapraid.level}}" id="heroSnapraid">
-  <div class="card-top"><span>SnapRAID</span><span class="signal-pill state-{{data.health_overview.cards.snapraid.level}}" id="heroSnapraidSignal">{{data.health_overview.cards.snapraid.level|upper}}</span></div>
+  <div class="card-top"><span>SnapRAID</span><span class="signal-pill state-{{data.health_overview.cards.snapraid.level}}" id="heroSnapraidSignal">{{{'ok':'Good','warn':'Review','bad':'Critical','unknown':'Unverified','busy':'Running'}[data.health_overview.cards.snapraid.level]}}</span></div>
   <strong id="snapHeroProtection">{{data.health_overview.cards.snapraid.label}}</strong>
   <small>Last sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small>
   <b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}} pending change(s){% else %}Diff unavailable{% endif %}</b>
@@ -197,6 +197,42 @@ waitForInitialData();
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const cap=v=>v?String(v).charAt(0).toUpperCase()+String(v).slice(1):'';
 const setText=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
+const HEALTH_STATES=['ok','warn','bad','unknown','busy'];
+const SIGNAL_LABELS={ok:'Good',warn:'Review',bad:'Critical',unknown:'Unverified',busy:'Running'};
+function applyState(element,level){
+  if(!element) return;
+  const state=HEALTH_STATES.includes(level)?level:'unknown';
+  HEALTH_STATES.forEach(s=>element.classList.remove('state-'+s));
+  element.classList.add('state-'+state);
+}
+function refreshHealthOverview(overview){
+  if(!overview) return;
+  const summary=document.getElementById('healthSummary');
+  applyState(summary,overview.level);
+  setText('healthSummaryTitle',overview.label||'Verification needed');
+  setText('healthSummaryDetail',overview.detail||'Waiting for fresh status information');
+  const cards=overview.cards||{};
+  [['vod','heroVod'],['raid','heroRaid'],['snapraid','heroSnapraid'],['disks','heroDisks']].forEach(([key,id])=>{
+    const state=cards[key];
+    if(!state) return;
+    applyState(document.getElementById(id),state.level);
+    const signal=document.getElementById(id+'Signal');
+    applyState(signal,state.level);
+    setText(id+'Signal',key==='snapraid'?(SIGNAL_LABELS[state.level]||'Unknown'):(state.label||'Unknown'));
+    setText(id+'Detail',state.detail||'');
+  });
+  const snap=cards.snapraid;
+  if(snap){
+    applyState(document.getElementById('snapProtectionPill'),snap.level);
+    setText('snapProtectionPill',snap.label||'Not verified');
+    setText('snapHeroProtection',snap.label||'Not verified');
+    const array=document.getElementById('opArrayCard');
+    if(array){
+      applyState(array,snap.level==='ok'?'ok':'unknown');
+    }
+  }
+}
+
 async function pollObservation(){
   try {
     const r=await fetch('/api/observation',{cache:'no-store'});
@@ -253,7 +289,9 @@ async function refreshStatus(){
     const r=await fetch('/api/status');
     const j=await r.json();
     document.getElementById('updated').textContent=j.updated||'';
+    setText('healthSummaryUpdated','Updated '+(j.updated||'just now'));
     refreshDiskInventory(j.disk_inventory);
+    refreshHealthOverview(j.health_overview);
     if(j.snapraid){
       const s=j.snapraid;
       const set=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
@@ -270,27 +308,24 @@ async function refreshStatus(){
       const lastSync=s.last_sync?.display || 'Unknown';
       set('snapLastSync', lastSync);
       set('snapHeroLastSync', lastSync);
-      set('snapHeroProtection', s.protection || 'Unknown');
+      // Assessment text comes from health_overview, not the historical log result.
 
       const heroPending = s.maintenance_running
         ? (s.job?.progress ? (s.job.progress.percent+'% · '+s.job.progress.processed+' processed') : 'Maintenance job running')
         : (s.diff_ok ? ((s.pending_total ?? 'Unknown')+' pending change(s)') : 'Diff unavailable');
       set('snapHeroPending', heroPending);
 
-      const pill=document.getElementById('snapProtectionPill');
-      if(pill){
-        pill.textContent=s.protection||'Unknown';
-        pill.classList.remove('ok','warn','bad');
-        if(['Last log OK','Last log warning'].includes(s.protection)) pill.classList.add('warn');
-        else if(['Changes Pending','Syncing','Scrubbing','Repair in progress','Checking','SnapRAID busy'].includes(s.protection)) pill.classList.add('warn');
-        else pill.classList.add('bad');
-      }
 
       set('snapRawStatus', s.status_raw || 'No host snapshot collected. Dashboard does not execute SnapRAID.');
       set('snapRawDiff', s.diff_raw || 'No host snapshot collected. Dashboard does not execute SnapRAID.');
       if(s.last_sync){
         set('opSync', s.last_sync.age);
         set('opSyncDetail', s.last_sync.display+' · from '+s.last_sync.source+(s.last_sync.stale?' · overdue':''));
+        applyState(document.getElementById('opSyncCard'),s.last_sync.stale?'warn':'ok');
+      } else {
+        set('opSync','Unknown');
+        set('opSyncDetail','No verified sync recorded');
+        applyState(document.getElementById('opSyncCard'),'unknown');
       }
     }
   }catch(e){}
