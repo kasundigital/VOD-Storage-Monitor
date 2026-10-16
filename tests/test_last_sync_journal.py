@@ -20,6 +20,10 @@ def line(message, timestamp, pid='1'):
 
 
 class JournalSyncTests(unittest.TestCase):
+    def setUp(self):
+        # Lookup cache is process-local; each regression must start fresh.
+        journal._sync_cache.update(expires=0.0, value=None)
+
     def test_successful_sync_service_timestamp(self):
         past = 1792110901.0
         records = '\n'.join([
@@ -112,6 +116,70 @@ class JournalSyncTests(unittest.TestCase):
         self.assertEqual(value['epoch'], newer)
         self.assertEqual(value['source'], 'host systemd journal')
         self.assertFalse(value['stale'])
+
+    def test_recent_window_is_fast_path_with_more_than_eight_seconds_allowed(self):
+        stamp = datetime(2026, 10, 16, 0, 35, 1, tzinfo=timezone.utc).timestamp()
+        record = (f'{stamp:.6f} den-sm5049p-1 systemd[1]: '
+                  'snapraid-sync-resume-20261016.service: Deactivated successfully.')
+        def query(command, **kwargs):
+            self.assertEqual(command[0], 'journalctl')
+            self.assertGreaterEqual(kwargs['timeout'], 20)
+            self.assertTrue(any(arg.startswith('--since=') for arg in command))
+            return SimpleNamespace(returncode=0, stdout=record, stderr='')
+        with (patch.object(journal.shutil, 'which', return_value='/usr/bin/journalctl'),
+              patch.object(journal.Path, 'is_dir', return_value=True),
+              patch.object(journal.subprocess, 'run', side_effect=query) as run,
+              patch.object(journal.time, 'time', return_value=stamp + 3600)):
+            self.assertAlmostEqual(journal.last_successful_host_sync(), stamp)
+        # Successful two-day search must not scan seven or 180 days.
+        self.assertEqual(run.call_count, 2)
+
+    def test_falls_back_to_seven_days_only_when_no_recent_sync(self):
+        stamp = datetime(2026, 10, 12, 0, 35, 1, tzinfo=timezone.utc).timestamp()
+        record = (f'{stamp:.6f} den-sm5049p-1 systemd[1]: '
+                  'snapraid-sync-older.service: Deactivated successfully.')
+        calls = []
+        def query(command, **kwargs):
+            calls.append(kwargs['timeout'])
+            # The persistent journal returns a valid completion in the
+            # second (seven-day) search window, after two empty first calls.
+            return SimpleNamespace(returncode=0, stdout=record if len(calls) == 3 else '', stderr='')
+        with (patch.object(journal.shutil, 'which', return_value='/usr/bin/journalctl'),
+              patch.object(journal.Path, 'is_dir', return_value=True),
+              patch.object(journal.subprocess, 'run', side_effect=query),
+              patch.object(journal.time, 'time', return_value=stamp + 5 * 86400)):
+            self.assertAlmostEqual(journal.last_successful_host_sync(), stamp)
+        self.assertEqual(calls, [30, 30, 45, 45])
+
+    def test_timeout_on_recent_window_does_not_hide_older_success(self):
+        stamp = datetime(2026, 10, 12, 0, 35, 1, tzinfo=timezone.utc).timestamp()
+        record = (f'{stamp:.6f} den-sm5049p-1 systemd[1]: '
+                  'snapraid-sync-older.service: Deactivated successfully.')
+        calls = []
+        def query(command, **kwargs):
+            calls.append(kwargs['timeout'])
+            if len(calls) == 1:
+                raise journal.subprocess.TimeoutExpired(command, kwargs['timeout'])
+            return SimpleNamespace(returncode=0, stdout=record if len(calls) == 3 else '', stderr='')
+        with (patch.object(journal.shutil, 'which', return_value='/usr/bin/journalctl'),
+              patch.object(journal.Path, 'is_dir', return_value=True),
+              patch.object(journal.subprocess, 'run', side_effect=query),
+              patch.object(journal.time, 'time', return_value=stamp + 5 * 86400)):
+            self.assertAlmostEqual(journal.last_successful_host_sync(), stamp)
+        self.assertEqual(calls, [30, 30, 45, 45])
+
+    def test_journal_query_is_cached_for_dashboard_refreshes(self):
+        stamp = datetime(2026, 10, 16, 0, 35, 1, tzinfo=timezone.utc).timestamp()
+        record = (f'{stamp:.6f} den-sm5049p-1 systemd[1]: '
+                  'snapraid-sync-resume-20261016.service: Deactivated successfully.')
+        with (patch.object(journal.shutil, 'which', return_value='/usr/bin/journalctl'),
+              patch.object(journal.Path, 'is_dir', return_value=True),
+              patch.object(journal.subprocess, 'run',
+                           return_value=SimpleNamespace(returncode=0, stdout=record, stderr='')) as run,
+              patch.object(journal.time, 'time', return_value=stamp + 3600)):
+            self.assertAlmostEqual(journal.last_successful_host_sync(), stamp)
+            self.assertAlmostEqual(journal.last_successful_host_sync(), stamp)
+            self.assertEqual(run.call_count, 2)
 
     def test_content_state_mtime_does_not_claim_success(self):
         with patch.object(monitor, 'last_run_summary', return_value={'last_sync_ok': None}), \

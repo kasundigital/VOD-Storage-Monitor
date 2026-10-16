@@ -5,10 +5,12 @@ proves that the specific host-run sync command exited successfully. The
 dashboard never executes SnapRAID or acquires its content lock.
 """
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -57,35 +59,70 @@ def parse_sync_completions(journal_lines, now=None):
     return latest
 
 
-def last_successful_host_sync():
-    """Find recent successful systemd-run sync completions in mounted host journals.
+# Query the recent host journal first: searching 180 days of log data on large
+# media servers can take longer than the previous hard-coded 8-second timeout.
+# Expand only if there is no confirmed success in the recent window.
+SEARCH_WINDOWS = ((2, 30), (7, 45), (30, 60), (180, 90))
+SYNC_CACHE_TTL_SECONDS = 300
+_sync_cache = {'expires': 0.0, 'value': None}
+_sync_cache_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
-    Returns None when unavailable; never assumes success from content-file mtime
-    or from a log that merely contains 'Everything OK' before an eventual failure.
+
+def _scan_successful_host_sync():
+    """Return the latest matching successful host sync completion, or None.
+
+    This only reads host journals. The monitor never launches SnapRAID or takes
+    its content lock. Every search checks all configured journal directories.
     """
     if not shutil.which('journalctl'):
         return None
-    latest = None
-    journal_dirs = os.getenv('HOST_JOURNAL_DIRS', DEFAULT_JOURNAL_DIRS).split(':')
-    # The Ubuntu host accepts ISO wall-clock dates; relying on --since=@epoch
-    # caused this query to return no entries while an otherwise identical
-    # journalctl --since=2026-10-15 command returned a verified completion.
-    cutoff = datetime.fromtimestamp(time.time() - 180 * 86400).strftime('%Y-%m-%d %H:%M:%S')
-    for directory in dict.fromkeys(journal_dirs):
-        if not directory or not Path(directory).is_dir():
-            continue
-        try:
-            result = subprocess.run(
-                ['journalctl', '--directory=' + directory, '--no-pager',
-                 '--output=short-unix', '--since=' + cutoff,
-                 '--grep=snapraid-', '--lines=300'],
-                capture_output=True, text=True, check=False, timeout=8,
-            )
-            if result.returncode:
-                continue
-            found = parse_sync_completions(result.stdout)
-            if found is not None:
-                latest = found if latest is None else max(latest, found)
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-    return latest
+    journal_dirs = tuple(dict.fromkeys(
+        d for d in os.getenv('HOST_JOURNAL_DIRS', DEFAULT_JOURNAL_DIRS).split(':')
+        if d and Path(d).is_dir()
+    ))
+    if not journal_dirs:
+        return None
+
+    for days, timeout in SEARCH_WINDOWS:
+        cutoff = datetime.fromtimestamp(time.time() - days * 86400).strftime('%Y-%m-%d %H:%M:%S')
+        latest = None
+        for directory in journal_dirs:
+            try:
+                result = subprocess.run(
+                    ['journalctl', '--directory=' + directory, '--no-pager',
+                     '--output=short-unix', '--since=' + cutoff,
+                     '--grep=snapraid-', '--lines=300'],
+                    capture_output=True, text=True, check=False, timeout=timeout,
+                )
+                if result.returncode:
+                    # Volatile journal mounts legitimately may have no entries.
+                    continue
+                found = parse_sync_completions(result.stdout)
+                if found is not None:
+                    latest = found if latest is None else max(latest, found)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    'Host SnapRAID journal query timed out: path=%s days=%d timeout=%ds',
+                    directory, days, timeout,
+                )
+            except OSError as exc:
+                logger.warning('Host SnapRAID journal unavailable at %s: %s', directory, exc)
+        if latest is not None:
+            return latest
+    return None
+
+
+def last_successful_host_sync():
+    """Cached successful sync from host journal, safe for frequent UI polling.
+
+    Cache even a negative result for five minutes to avoid repeatedly scanning
+    busy journals. A new successful sync may take up to five minutes to display.
+    """
+    with _sync_cache_lock:
+        if time.monotonic() < _sync_cache['expires']:
+            return _sync_cache['value']
+        value = _scan_successful_host_sync()
+        _sync_cache['value'] = value
+        _sync_cache['expires'] = time.monotonic() + SYNC_CACHE_TTL_SECONDS
+        return value

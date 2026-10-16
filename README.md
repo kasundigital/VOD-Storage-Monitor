@@ -85,7 +85,9 @@ Log paths may be globs such as `/docker/snapraid/logs/*.log`; the newest matchin
 
 **Important:** The "Scrub" box reports the age of blocks last **scrubbed**, not the age of the last **sync**. A new successful sync does not reset that scrub age. A manually captured status/diff snapshot can remain old until the host snapshot script is run again when no SnapRAID process is active.
 
-### Journal-backed successful sync dates (v0.6.4)
+### Journal-backed successful sync dates (v0.6.5)
+
+The monitor now checks the **last 2 days first** using a 30-second journalctl timeout, matching the successful diagnostics on the large VOD host (which took 7.38 seconds). Only when no recent successful sync is found does it expand to 7, 30, and 180 days with longer bounded timeouts. Results (including an unsuccessful lookup) are cached for five minutes, so normal dashboard refreshes do not repeatedly scan the journal. A new sync may take up to five minutes to appear. Timed-out lookups are logged as warnings; no SnapRAID commands run.
 
 Starting in v0.6.4, the journal reader uses an ISO calendar-time `--since` filter rather than an epoch-style query. This matches the working host manual diagnostics for the October 15 successful sync and prevents the sync age from silently reverting to an older monitor-history entry when the journal query returns no results.
 
@@ -93,7 +95,7 @@ In v0.6.3 the monitor uses host `journalctl --output=short-unix` entries to reco
 
 **Timezone:** Set `TZ` in your own `.env` to the timezone of the monitored host. For `den-sm5049p-1`, set `TZ=America/Chicago` (not `America/New_York`) to match the host's CDT/CST clock. Changing timezone alters display formatting only and does not run SnapRAID.
 
-The Docker image includes `journalctl` and the Compose file mounts both `/var/log/journal` and `/run/log/journal` **read-only**, because Ubuntu may use persistent or volatile journals. The monitor queries at most the latest 100 matching records in each location, limited to the last 180 days. It does not execute `snapraid`, modify host logs, or run any maintenance. Only dedicated sync services that systemd reports as successfully deactivated are treated as verified. Ordinary syncs seen by the process watcher and confirmed by a contemporaneous SnapRAID log still count.
+The Docker image includes `journalctl` and the Compose file mounts both `/var/log/journal` and `/run/log/journal` **read-only**, because Ubuntu may use persistent or volatile journals. The monitor queries at most the latest 300 matching records in each location and expands the historical window only when necessary, up to 180 days. It does not execute `snapraid`, modify host logs, or run any maintenance. Only dedicated sync services that systemd reports as successfully deactivated are treated as verified. Ordinary syncs seen by the process watcher and confirmed by a contemporaneous SnapRAID log still count.
 
 After updating the Compose file and image, verify the source beneath "Last sync" reads `host systemd journal` if a matching completion exists; it may otherwise show `run history` or `Unknown`. The prior fixed `SNAPRAID_LOG_PATH` can still display historical recovery logs and need not be the most recent run. The dashboard's cache normally refreshes every 60 seconds. A dashboard update does **not** run a new parity sync.
 
