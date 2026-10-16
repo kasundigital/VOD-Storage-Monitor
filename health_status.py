@@ -101,7 +101,9 @@ def assess_health(data, now=None):
         snap_state = _item('warn', 'Sync overdue', f"Last verified sync: {synced.get('age', 'older than expected')}")
     elif not synced.get('epoch'):
         snap_state = _item('unknown', 'Sync unverified', 'No successful sync timestamp is available')
-    elif not fresh or snap.get('status_ok') is not True or snap.get('diff_ok') is not True or pending is None:
+    elif (not fresh
+          or datetime.fromisoformat(snap['snapshot_time'].replace('Z', '+00:00')).timestamp() < synced['epoch']
+          or snap.get('status_ok') is not True or snap.get('diff_ok') is not True or pending is None):
         snap_state = _item('unknown', 'Verification needed', 'Capture a current host status/diff snapshot to verify parity')
     elif health.get('errors') is None or health.get('sync_in_progress') is not False:
         snap_state = _item('unknown', 'Incomplete snapshot', 'Host status did not confirm zero errors and a finished sync')
