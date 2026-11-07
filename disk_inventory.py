@@ -44,11 +44,23 @@ def host_mounts(path='/host/proc/1/mountinfo'):
             left, right = line.split(' - ', 1)
             l, r = left.split(), right.split()
             mounts.append({'path': os.path.normpath(_decode_mount(l[4])),
+                           'root': _decode_mount(l[3]),
                            'major_minor': l[2], 'fstype': r[0],
                            'source': _decode_mount(r[1]) if len(r) > 1 else ''})
         except (ValueError, IndexError):
             continue
     return mounts
+
+
+def host_mount_point(major_minor, mounts):
+    """Host mount point of a block device's filesystem root, or None.
+
+    Bind mounts of subdirectories (mount root other than '/') are skipped, so
+    a container bind such as /var/log/journal never names the root array.
+    """
+    matches = [m for m in mounts if m.get('major_minor') == major_minor]
+    roots = [m for m in matches if m.get('root', '/') == '/']
+    return min((m['path'] for m in roots), key=len) if roots else None
 
 
 def block_device_map(run):

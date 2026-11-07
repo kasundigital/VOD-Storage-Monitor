@@ -60,7 +60,20 @@ def _operation(command):
     return None
 
 
+def _is_wrapper(command):
+    try:
+        args = shlex.split(command, comments=False)
+    except ValueError:
+        return False
+    return any(Path(token).name == 'snapraid-maintenance.sh' for token in args)
+
+
 def _parse_line(line, system_crontab):
+    found = _parse_entry(line, system_crontab)
+    return found[:2] if found else None
+
+
+def _parse_entry(line, system_crontab):
     parts = line.split(None, 6 if system_crontab else 5)
     if not parts:
         return None
@@ -84,7 +97,7 @@ def _parse_line(line, system_crontab):
     operation = _operation(command)
     if not operation or not croniter.is_valid(expression):
         return None
-    return expression, operation
+    return expression, operation, _is_wrapper(command)
 
 
 def _read_jobs(path, name, system, default_tz, now):
@@ -107,10 +120,10 @@ def _read_jobs(path, name, system, default_tz, now):
             continue
         if '=' in line.split(None, 1)[0]:
             continue
-        found = _parse_line(line, system)
+        found = _parse_entry(line, system)
         if not found:
             continue
-        expression, operation = found
+        expression, operation, wrapper = found
         tz = _time_zone(zone)
         try:
             nxt = croniter(expression, datetime.fromtimestamp(now, tz)).get_next(datetime)
@@ -118,6 +131,7 @@ def _read_jobs(path, name, system, default_tz, now):
             continue
         jobs.append({
             'operation': operation, 'expression': expression, 'source': name,
+            'wrapper': wrapper,
             'timezone': zone, 'next_epoch': nxt.timestamp(),
             'next_display': nxt.strftime('%a %d %b %Y, %I:%M %p %Z'),
             'next_iso': nxt.isoformat()
@@ -162,3 +176,64 @@ def host_cron_schedules(now=None):
         'warnings': warnings,
         'note': 'Read-only host crontab view. Times are estimates; cron daemon state is not verified.'
     }
+
+
+WEEKDAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+
+
+def infer_wrapper_scrub(schedule, scrub_starts, now=None, min_runs=2, window_hours=12):
+    """Infer the next scrub when it runs inside the scheduled sync wrapper.
+
+    `snapraid-maintenance.sh sync` may scrub on one weekday after syncing, so
+    no cron line mentions scrub. When at least `min_runs` observed scrubs each
+    started within `window_hours` after a scheduled wrapper sync, all on the
+    same weekday, report the next wrapper run on that weekday. The result is
+    marked inferred: it comes from run history, not from a cron entry.
+    """
+    now = time.time() if now is None else now
+    schedule = dict(schedule or {})
+    next_by = dict(schedule.get('next_by_operation') or {})
+    if 'scrub' in next_by:
+        return schedule
+    sync = next((job for job in schedule.get('jobs') or []
+                 if job.get('operation') == 'sync' and job.get('wrapper')), None)
+    if not sync:
+        return schedule
+    tz = _time_zone(sync['timezone'])
+    weekdays = set()
+    tied = 0
+    for epoch in scrub_starts or []:
+        try:
+            local = datetime.fromtimestamp(epoch, tz)
+            scheduled = croniter(sync['expression'], local).get_prev(datetime)
+        except (ValueError, OverflowError, TypeError, OSError):
+            continue
+        # Manual scrubs that are not near a wrapper run are ignored.
+        if (local - scheduled).total_seconds() <= window_hours * 3600:
+            weekdays.add(scheduled.weekday())
+            tied += 1
+    if tied < min_runs or len(weekdays) != 1:
+        return schedule
+    weekday = weekdays.pop()
+    try:
+        it = croniter(sync['expression'], datetime.fromtimestamp(now, tz))
+        nxt = None
+        for _ in range(1000):
+            candidate = it.get_next(datetime)
+            if candidate.weekday() == weekday:
+                nxt = candidate
+                break
+    except (ValueError, OverflowError, TypeError):
+        return schedule
+    if nxt is None:
+        return schedule
+    next_by['scrub'] = {
+        'operation': 'scrub', 'expression': sync['expression'],
+        'source': sync['source'] + f' (inside sync wrapper, observed {WEEKDAYS[weekday]})',
+        'timezone': sync['timezone'], 'wrapper': True, 'inferred': True,
+        'observed_runs': tied, 'next_epoch': nxt.timestamp(),
+        'next_display': nxt.strftime('%a %d %b %Y, %I:%M %p %Z'),
+        'next_iso': nxt.isoformat()
+    }
+    schedule['next_by_operation'] = next_by
+    return schedule

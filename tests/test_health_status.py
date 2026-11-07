@@ -78,6 +78,21 @@ class HealthSummaryTests(unittest.TestCase):
         data['snapraid']['pending_total']=5
         self.assertEqual(assess_health(data,now=NOW)['cards']['snapraid']['level'],'warn')
 
+    def test_pending_changes_with_scheduled_sync_are_green(self):
+        data=clean_data()
+        data['snapraid']['pending_total']=185
+        cron={'next_by_operation':{'sync':{'next_epoch':NOW+3600,'next_display':'Sat 07 Nov 2026, 02:00 AM CST'}}}
+        card=assess_health(data,now=NOW,cron=cron)['cards']['snapraid']
+        self.assertEqual(card['level'],'ok')
+        self.assertEqual(card['label'],'Sync scheduled')
+        self.assertIn('185',card['detail'])
+
+    def test_pending_changes_with_late_scheduled_sync_stay_amber(self):
+        data=clean_data()
+        data['snapraid']['pending_total']=185
+        cron={'next_by_operation':{'sync':{'next_epoch':NOW+30*3600}}}
+        self.assertEqual(assess_health(data,now=NOW,cron=cron)['cards']['snapraid']['level'],'warn')
+
     def test_critical_snapraid_interrupted_sync_is_red(self):
         data=clean_data()
         data['snapraid']['health']['sync_in_progress']=99

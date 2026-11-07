@@ -4,12 +4,12 @@ from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, flash
-from disk_inventory import check_inventory
+from disk_inventory import check_inventory, host_mounts, host_mount_point
 from health_status import assess_health
 from maintenance_tasks import pending_maintenance
-from cron_schedule import host_cron_schedules
+from cron_schedule import host_cron_schedules, infer_wrapper_scrub
 from host_sync_journal import last_successful_host_sync
-from maintenance_logs import completed_sync_log
+from maintenance_logs import completed_sync_log, COMPLETED_FOOTER
 from snapshot_evidence import snapshot_current
 
 APP_DIR = Path(__file__).resolve().parent
@@ -24,7 +24,7 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
 SYNC_STALE_HOURS = float(os.getenv('SYNC_STALE_HOURS', '26'))
 SCRUB_STALE_DAYS = float(os.getenv('SCRUB_STALE_DAYS', '14'))
-APP_VERSION = os.getenv('APP_VERSION', '0.6.8')
+APP_VERSION = os.getenv('APP_VERSION', '0.6.9')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -312,15 +312,190 @@ def watch_jobs_once():
             if log['mtime'] and log['mtime'] >= started - 5:
                 outcome = log_result(log['text'])
             status = outcome['result'] or 'Finished'
+            # The wrapper may still be writing (or renaming) its log when the
+            # process disappears; resolve_pending_results() retries later.
             message = outcome['detail'] or ('Result from ' + log['path'] if outcome['result']
-                                            else 'Process ended; no result found in the log')
-            c.execute('INSERT INTO events(ts,kind,status,message,duration) VALUES(?,?,?,?,?)',
-                      (datetime.fromtimestamp(started, timezone.utc).isoformat(), job['name'], status,
-                       message, time.time() - started))
+                                            else WAITING_MESSAGE)
+            cur = c.execute('INSERT INTO events(ts,kind,status,message,duration) VALUES(?,?,?,?,?)',
+                            (datetime.fromtimestamp(started, timezone.utc).isoformat(), job['name'], status,
+                             message, time.time() - started))
+            if not outcome['result']:
+                records = _pending_records(c)
+                records[str(cur.lastrowid)] = {'log_path': job.get('log_path'),
+                                               'log_size': job.get('log_size', 0)}
+                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('pending_results',?)",
+                          (json.dumps(records),))
     if finished or set(active) != set(current):
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('active_jobs',?)", (json.dumps(current),))
     c.commit()
     c.close()
+    global _last_resolve
+    if finished or time.time() - _last_resolve >= RESOLVE_INTERVAL_SECONDS:
+        _last_resolve = time.time()
+        resolve_pending_results()
+
+
+WAITING_MESSAGE = 'Waiting for log result'
+NO_RESULT_MESSAGE = 'Process ended; no result found in the log'
+RESULT_WAIT_SECONDS = 6 * 3600
+RESULT_BACKFILL_DAYS = 30
+RESOLVE_INTERVAL_SECONDS = 300
+_last_resolve = 0.0
+_resolve_checked = set()
+
+
+def _log_candidates():
+    paths = {SNAPRAID_LOG_PATH, SNAPRAID_SCRUB_LOG_PATH} - {'', None}
+    found = {}
+    for pattern in paths:
+        for name in (glob.glob(pattern) if glob.has_magic(pattern) else [pattern]):
+            try:
+                if os.path.isfile(name):
+                    found[name] = os.path.getmtime(name)
+            except OSError:
+                continue
+    return sorted((mtime, name) for name, mtime in found.items())
+
+
+WRAPPER_HEADER = '=== SnapRAID sync ==='
+
+
+def _full_count(path, data):
+    total = 0
+    carry = b''
+    with open(path, 'rb') as stream:
+        while True:
+            chunk = stream.read(1 << 20)
+            if not chunk:
+                return total
+            block = carry + chunk
+            total += block.count(data)
+            # A partial match at the chunk edge completes in the next block;
+            # the carry is shorter than `data`, so nothing is counted twice.
+            carry = block[-(len(data) - 1):] if len(data) > 1 else b''
+
+
+def run_log_outcome(kind, started, ended, candidates, pending=None, now=None):
+    """Result of a finished run, using only log text that run can have written.
+
+    `pending` is the watcher's record of the log path and size when the run
+    was first seen; text before that offset belongs to earlier runs. Without
+    it (rows from older builds) only single-run snapraid-maintenance.sh logs
+    are trusted. For the wrapper a sync is resolved only by its success footer,
+    because a Sunday scrub can share the log and end with its own result.
+    """
+    window = [(m, p) for m, p in candidates if ended - 60 <= m <= ended + RESULT_WAIT_SECONDS]
+    for mtime, path in window[:3]:
+        if mtime < started - 5:
+            continue
+        same_log = bool(pending) and path == pending.get('log_path')
+        since = (pending or {}).get('log_size', 0) if same_log else 0
+        log = read_snapraid_log(path, since=since)
+        if log['error']:
+            continue
+        text = log['text']
+        if since:
+            wrapper = WRAPPER_HEADER in text
+        else:
+            try:
+                with open(path, 'rb') as stream:
+                    wrapper = stream.read(64).decode('utf-8', errors='replace').startswith(WRAPPER_HEADER)
+            except OSError:
+                wrapper = False
+            if not pending and (not wrapper or _full_count(path, WRAPPER_HEADER.encode()) != 1):
+                # Cannot tell which part of a shared/append log is this run's.
+                continue
+        outcome = log_result(text)
+        if wrapper and kind == 'sync':
+            # A Sunday scrub shares this log; its errors are not the sync's.
+            if COMPLETED_FOOTER.search(text):
+                return {'result': 'OK', 'detail': 'Wrapper completed successfully: ' + path}
+            continue
+        if wrapper and not pending and not COMPLETED_FOOTER.search(text) and outcome['result'] != 'Error':
+            continue
+        if outcome['result']:
+            return {'result': outcome['result'],
+                    'detail': outcome['detail'] or 'Result from ' + path}
+    return None
+
+
+def _pending_records(c):
+    try:
+        row = c.execute("SELECT value FROM settings WHERE key='pending_results'").fetchone()
+        return json.loads(row[0]) if row else {}
+    except (ValueError, sqlite3.Error):
+        return {}
+
+
+def resolve_pending_results(now=None):
+    """Fill in results for runs whose log was not complete when they ended.
+
+    Also backfills recent rows recorded as 'no result found' by older builds.
+    Only the dashboard's own history database is written.
+    """
+    now = time.time() if now is None else now
+    since = datetime.fromtimestamp(now - RESULT_BACKFILL_DAYS * 86400, timezone.utc).isoformat()
+    c = db()
+    try:
+        rows = c.execute("SELECT id,ts,kind,message,duration FROM events WHERE status='Finished' "
+                         "AND message IN (?,?) AND ts >= ?",
+                         (WAITING_MESSAGE, NO_RESULT_MESSAGE, since)).fetchall()
+        records = _pending_records(c)
+        if not rows:
+            if records:
+                c.execute("DELETE FROM settings WHERE key='pending_results'")
+                c.commit()
+            return 0
+        candidates = _log_candidates()
+        signature = tuple(candidates[-40:])
+        if len(_resolve_checked) > 5000:
+            _resolve_checked.clear()
+        updated = 0
+        for row_id, ts, kind, message, duration in rows:
+            try:
+                started = datetime.fromisoformat(ts).timestamp()
+            except ValueError:
+                continue
+            ended = started + (duration or 0)
+            pending = records.get(str(row_id)) if message == WAITING_MESSAGE else None
+            key = (row_id, signature)
+            outcome = None
+            if key not in _resolve_checked:
+                outcome = run_log_outcome(kind, started, ended, candidates, pending, now)
+            if outcome:
+                c.execute('UPDATE events SET status=?, message=? WHERE id=?',
+                          (outcome['result'], outcome['detail'], row_id))
+                records.pop(str(row_id), None)
+                updated += 1
+            else:
+                _resolve_checked.add(key)
+                if message == WAITING_MESSAGE and now > ended + RESULT_WAIT_SECONDS:
+                    c.execute('UPDATE events SET message=? WHERE id=?', (NO_RESULT_MESSAGE, row_id))
+                    records.pop(str(row_id), None)
+        live = {str(r[0]) for r in rows}
+        records = {k: v for k, v in records.items() if k in live}
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('pending_results',?)", (json.dumps(records),))
+        c.commit()
+        return updated
+    finally:
+        c.close()
+
+
+def recent_scrub_starts(days=60):
+    since = datetime.fromtimestamp(time.time() - days * 86400, timezone.utc).isoformat()
+    c = db()
+    try:
+        rows = c.execute("SELECT ts FROM events WHERE kind='scrub' AND status != 'started' AND ts >= ?",
+                         (since,)).fetchall()
+    finally:
+        c.close()
+    starts = []
+    for (ts,) in rows:
+        try:
+            starts.append(datetime.fromisoformat(ts).timestamp())
+        except ValueError:
+            continue
+    return starts
 
 
 def job_watch_loop():
@@ -773,14 +948,38 @@ def disk_descendants(name):
     return {Path(line.strip()).name for line in out.splitlines() if line.strip()}
 
 
-def usage_from_mount(mountpoint, source=None):
+def device_major_minor(name):
+    try:
+        return Path(f'/sys/class/block/{name}/dev').read_text().strip() or None
+    except OSError:
+        return None
+
+
+def host_mount_label(container_path, device):
+    """Name a filesystem by its host mount point, not the container's view.
+
+    Inside the container, lsblk/findmnt report whichever bind mount exposes a
+    device (e.g. md2 as /host/var/log/journal when it is really the host's /).
+    """
+    mm = device_major_minor(device) if device else None
+    if not mm:
+        return container_path
+    try:
+        found = host_mount_point(mm, host_mounts())
+    except OSError:
+        found = None
+    return found or container_path
+
+
+def usage_from_mount(mountpoint, source=None, display=None):
     if not mountpoint or mountpoint == '[SWAP]':
         return None
     info=get_df(mountpoint)
     if info.get('error'):
         return None
     return {
-        'mount': mountpoint,
+        'mount': display or mountpoint,
+        'path': mountpoint,
         'source': source or mountpoint,
         'pct': info.get('pct',0),
         'used_h': info.get('used_h','-'),
@@ -797,7 +996,8 @@ def disk_usage(name):
         for line in out.splitlines():
             parts=line.split(None,1)
             if len(parts)==2 and parts[1] and parts[1] != '[SWAP]':
-                u=usage_from_mount(parts[1], Path(parts[0]).name)
+                dev=Path(parts[0]).name
+                u=usage_from_mount(parts[1], dev, host_mount_label(parts[1], dev))
                 if u:
                     direct.append(u)
     if direct:
@@ -821,7 +1021,7 @@ def disk_usage(name):
         rc2,target=run(['findmnt','-n','-o','TARGET','/dev/'+md],timeout=10)
         target=(target or '').strip()
         if rc2 == 0 and target:
-            u=usage_from_mount(target, md)
+            u=usage_from_mount(target, md, host_mount_label(target, md))
             if u:
                 candidates.append(u)
     if candidates:
@@ -889,9 +1089,9 @@ def collect(force=False):
         }
         h=data['disk_health']
         h['other']=h['total']-h['healthy']-h['failed']-h['warning']
-        data['health_overview']=assess_health(data)
-        data['cron_schedule']=host_cron_schedules()
-        data['maintenance_tasks']=pending_maintenance(data, cron=data['cron_schedule'])
+        data['cron_schedule']=infer_wrapper_scrub(host_cron_schedules(), recent_scrub_starts())
+        data['health_overview']=assess_health(data, cron=data['cron_schedule'], stale_hours=SYNC_STALE_HOURS)
+        data['maintenance_tasks']=pending_maintenance(data, cron=data['cron_schedule'], stale_hours=SYNC_STALE_HOURS)
         cache['data']=data; cache['updated']=fmt_time(time.time())
         return True
     finally:

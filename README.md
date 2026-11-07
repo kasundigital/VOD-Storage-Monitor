@@ -4,6 +4,13 @@ Monitor mergerfs capacity, mdadm RAID arrays, HDD/NVMe SMART health, and externa
 
 **The web application never invokes the `snapraid` executable — not even `status` or `diff`.** SnapRAID uses an exclusive content lock for those commands, and a 60-second dashboard poll previously raced with manually launched scrubs. This release removes that source of contention entirely.
 
+## Dashboard accuracy fixes (v0.6.9)
+
+- **Run history results.** A finished job whose log result is not yet written when the process exits is shown as `Waiting for log result` and re-checked (every 5 minutes, up to 6 hours) using only log text written after the job started. Rows recorded as `Process ended; no result found in the log` in the last 30 days are backfilled only from single-run `snapraid-maintenance.sh` logs that carry the `=== COMPLETED SUCCESSFULLY ===` footer, so an append-style log or an interrupted run is never credited with an older result. For the wrapper, a sync row is resolved only by the success footer, because a Sunday scrub shares the same log.
+- **Scrub schedule inside the sync wrapper.** When cron runs `snapraid-maintenance.sh sync` and run history shows at least two scrubs that each started within 12 hours of that cron run, all on the same weekday, the Scrub task shows `Next run (from run history)` for the next wrapper run on that weekday. This is an inference from history, labelled as such, not a cron entry.
+- **Scheduled sync drift is not a warning.** File changes since the last sync stay green (`Sync scheduled`) when the last verified sync is recent and the next cron sync will run before that sync becomes stale (`SYNC_STALE_HOURS`, default 26). If cron misses a run, the sync becomes stale and the warning returns.
+- **Host mount labels.** Disk usage now names a filesystem by its host mount point from `/host/proc/1/mountinfo` (for example the root mdadm array as `/`) instead of the container bind that exposes it (such as `/host/var/log/journal`). Usage figures are unchanged.
+
 ## Snapshot accuracy and startup (v0.6.8)
 
 Old status/diff snapshots are now labeled **Historical / unavailable**. Old pending changes or interrupted-sync reports no longer become current sync warnings; the snapshot refresh task remains visible. Fresh file differences are labeled **Changes since sync**, which does not mean the preceding sync failed. Current disk faults and errors in a recent snapshot still require attention.
@@ -97,7 +104,7 @@ The Compose deployment reads scheduled host sync logs using `SNAPRAID_LOG_PATH=/
 
 For existing installations, replace the old recovery-log value in `.env` with the maintenance-log path above, add the new bind mount (or download the updated Compose file), and recreate only the monitor with `docker compose up -d --no-deps vod-monitor`. The updater preserves `.env`, so it does not migrate an explicitly configured old log path. Keep `.env` and `./data` intact; back up the Compose file and `.env` before editing. To roll back, restore those configuration backups and recreate only the monitor.
 
-Verify access with `docker exec vod-monitor sh -c 'printenv SNAPRAID_LOG_PATH; ls -lt /host/snapraid-maintenance | head'`. The dashboard can verify future observed runs from their current logs; changing this path does not backfill old `Finished` history entries or refresh the saved status/diff snapshot. A Sunday scrub invoked inside the sync script may share its `sync-*.log`; indirect scrub scheduling is not discovered from cron. Run the existing snapshot capture script separately when all SnapRAID maintenance is idle to refresh pending-change and scrub coverage values.
+Verify access with `docker exec vod-monitor sh -c 'printenv SNAPRAID_LOG_PATH; ls -lt /host/snapraid-maintenance | head'`. The dashboard can verify future observed runs from their current logs; changing this path does not backfill old `Finished` history entries or refresh the saved status/diff snapshot. A Sunday scrub invoked inside the sync script may share its `sync-*.log`; its schedule is inferred from run history (see v0.6.9). Run the existing snapshot capture script separately when all SnapRAID maintenance is idle to refresh pending-change and scrub coverage values.
 
 ### Optional accurate status/diff snapshot (manual, host only)
 

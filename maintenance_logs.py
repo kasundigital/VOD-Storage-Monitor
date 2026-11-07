@@ -4,7 +4,7 @@ import os
 import re
 import time
 
-_FOOTER = re.compile(
+COMPLETED_FOOTER = _FOOTER = re.compile(
     r'^=== COMPLETED SUCCESSFULLY ===\n'
     r'(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) [^\n]+ \d{4}\s*\Z', re.M)
 

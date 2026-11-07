@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 os.environ['DB_PATH'] = os.path.join(tempfile.gettempdir(), 'vod-monitor-readonly-tests.sqlite3')
@@ -202,6 +203,88 @@ class JobHistoryTests(unittest.TestCase):
         summary = monitor.last_run_summary()
         self.assertEqual(summary['last']['status'], 'Finished')
         self.assertIsNone(summary['last_sync_ok'])
+
+    WRAPPER_OK = ('=== SnapRAID sync ===\nStarting SnapRAID sync\nEverything OK\n'
+                  '=== COMPLETED SUCCESSFULLY ===\nSun Nov  1 03:05:00 CST 2026\n')
+
+    def test_result_written_after_process_exit_is_resolved_later(self):
+        self.reset_history()
+        started = time.time() - 600
+        running = [{'pid': 11, 'name': 'sync', 'started': started}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'sync-1.log')
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write('=== SnapRAID sync ===\nStarting SnapRAID sync\n')
+            with patch.object(monitor, 'SNAPRAID_LOG_PATH', os.path.join(directory, 'sync-*.log')):
+                with patch.object(monitor, 'snapraid_processes', return_value=running):
+                    monitor.watch_jobs_once()
+                with patch.object(monitor, 'snapraid_processes', return_value=[]):
+                    monitor.watch_jobs_once()
+                self.assertEqual(monitor.last_run_summary()['last']['message'], monitor.WAITING_MESSAGE)
+                with open(path, 'a', encoding='utf-8') as stream:
+                    stream.write('Everything OK\n=== COMPLETED SUCCESSFULLY ===\nSat Nov  7 02:09:00 CST 2026\n')
+                self.assertEqual(monitor.resolve_pending_results(), 1)
+        summary = monitor.last_run_summary()
+        self.assertEqual(summary['last']['status'], 'OK')
+        self.assertIsNotNone(summary['last_sync_ok'])
+
+    def test_waiting_row_without_result_becomes_no_result_after_window(self):
+        self.reset_history()
+        started = time.time() - 600
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'sync-1.log')
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write('summary:exit:ok\n')  # previous run
+            with patch.object(monitor, 'SNAPRAID_LOG_PATH', path):
+                with patch.object(monitor, 'snapraid_processes',
+                                  return_value=[{'pid': 12, 'name': 'sync', 'started': started}]):
+                    monitor.watch_jobs_once()
+                with patch.object(monitor, 'snapraid_processes', return_value=[]):
+                    monitor.watch_jobs_once()
+                monitor.resolve_pending_results(now=time.time() + monitor.RESULT_WAIT_SECONDS + 60)
+        summary = monitor.last_run_summary()
+        self.assertEqual(summary['last']['status'], 'Finished')
+        self.assertEqual(summary['last']['message'], monitor.NO_RESULT_MESSAGE)
+        self.assertIsNone(summary['last_sync_ok'])
+
+    def _legacy_row(self, kind, started, duration):
+        c = monitor.db()
+        c.execute('INSERT INTO events(ts,kind,status,message,duration) VALUES(?,?,?,?,?)',
+                  (datetime.fromtimestamp(started, timezone.utc).isoformat(), kind, 'Finished',
+                   monitor.NO_RESULT_MESSAGE, duration))
+        c.commit(); c.close()
+
+    def test_old_no_result_rows_backfill_from_single_run_wrapper_log(self):
+        self.reset_history()
+        started = time.time() - 2 * 86400
+        self._legacy_row('sync', started, 540)
+        self._legacy_row('scrub', started + 540, 3360)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'sync-20261101.log')
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write(self.WRAPPER_OK.replace('Everything OK\n', 'Everything OK\nStarting scrub\nEverything OK\n'))
+            os.utime(path, (started + 3900, started + 3900))
+            with patch.object(monitor, 'SNAPRAID_LOG_PATH', os.path.join(directory, 'sync-*.log')):
+                self.assertEqual(monitor.resolve_pending_results(), 2)
+        statuses = {e['kind']: e['status'] for e in monitor.history(5)}
+        self.assertEqual(statuses, {'sync': 'OK', 'scrub': 'OK'})
+
+    def test_backfill_ignores_append_logs_and_logs_without_footer(self):
+        self.reset_history()
+        started = time.time() - 2 * 86400
+        self._legacy_row('sync', started, 540)
+        with tempfile.TemporaryDirectory() as directory:
+            appended = os.path.join(directory, 'sync-a.log')
+            with open(appended, 'w', encoding='utf-8') as stream:
+                stream.write(self.WRAPPER_OK * 2)  # two runs in one file
+            os.utime(appended, (started + 600, started + 600))
+            killed = os.path.join(directory, 'sync-b.log')
+            with open(killed, 'w', encoding='utf-8') as stream:
+                stream.write('=== SnapRAID sync ===\nStarting SnapRAID sync\n45%, 1200 MB\nEverything OK\n')
+            os.utime(killed, (started + 700, started + 700))
+            with patch.object(monitor, 'SNAPRAID_LOG_PATH', os.path.join(directory, 'sync-*.log')):
+                self.assertEqual(monitor.resolve_pending_results(), 0)
+        self.assertEqual(monitor.last_run_summary()['last']['status'], 'Finished')
 
     def test_recovered_fix_is_not_a_failure(self):
         result = monitor.log_result('summary:error_data:3\nsummary:exit:recovered\n')

@@ -8,7 +8,7 @@ import os
 import tempfile
 import unittest
 
-from cron_schedule import host_cron_schedules, _operation, _parse_line
+from cron_schedule import host_cron_schedules, infer_wrapper_scrub, _operation, _parse_line
 from maintenance_tasks import pending_maintenance
 
 TZ = ZoneInfo('America/Chicago')
@@ -121,16 +121,37 @@ class CronReadTests(unittest.TestCase):
 
 class MaintenanceTasksTests(unittest.TestCase):
     def test_pending_sync_scrub_and_snapshot_with_cron_dates(self):
+        # Changes since a recent sync with the next cron sync due before the
+        # last sync goes stale are normal drift, not an action item.
         status = pending_maintenance(sample_data(), now=NOW, cron=cron())
         jobs = {t['id']: t for t in status['items']}
-        self.assertEqual(jobs['sync']['status'], 'due')
+        self.assertEqual(jobs['sync']['status'], 'waiting')
+        self.assertEqual(jobs['sync']['label'], 'Scheduled sync')
         self.assertIn('629', jobs['sync']['detail'])
         self.assertIn('Fri 16 Oct', jobs['sync']['schedule']['next_display'])
         self.assertEqual(jobs['scrub']['status'], 'waiting')
         self.assertIn('100%', jobs['scrub']['detail'])
         self.assertIn('Sun 18 Oct', jobs['scrub']['schedule']['next_display'])
         self.assertEqual(jobs['snapshot']['status'], 'waiting')
-        self.assertGreaterEqual(status['attention'], 1)
+        self.assertEqual(status['attention'], 0)
+
+    def test_pending_changes_without_schedule_still_need_sync(self):
+        result = pending_maintenance(sample_data(), now=NOW, cron={'available': True, 'jobs': []})
+        jobs = {t['id']: t for t in result['items']}
+        self.assertEqual(jobs['sync']['status'], 'due')
+        self.assertEqual(result['attention'], 1)
+
+    def test_pending_changes_when_cron_sync_is_too_late_still_need_sync(self):
+        d = sample_data()
+        d['snapraid']['last_sync']['epoch'] = NOW - 23 * 3600  # 23h + 4.7h to next cron > 26h
+        jobs = {t['id']: t for t in pending_maintenance(d, now=NOW, cron=cron())['items']}
+        self.assertEqual(jobs['sync']['status'], 'due')
+
+    def test_stale_last_sync_is_not_excused_by_schedule(self):
+        d = sample_data()
+        d['snapraid']['last_sync'].update(stale=True, epoch=NOW - 30 * 3600)
+        jobs = {t['id']: t for t in pending_maintenance(d, now=NOW, cron=cron())['items']}
+        self.assertEqual(jobs['sync']['status'], 'due')
 
     def test_zero_pending_and_full_scrub_is_done(self):
         d = sample_data(pending=0, unscrubbed=0)
@@ -182,3 +203,48 @@ class MaintenanceTasksTests(unittest.TestCase):
 if __name__ == '__main__':
     unittest.main()
 
+
+
+class WrapperScrubInferenceTests(unittest.TestCase):
+    def schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cron_d = Path(directory) / 'cron.d'
+            cron_d.mkdir()
+            (cron_d / 'snapraid-maintenance').write_text(
+                'CRON_TZ=America/Chicago\n'
+                '0 2 * * * root flock -n /run/snapraid.lock /usr/local/sbin/snapraid-maintenance.sh sync\n')
+            with (patch('cron_schedule.ROOT_CRONTAB', Path(directory) / 'none'),
+                  patch('cron_schedule.SYSTEM_CRONTAB', Path(directory) / 'none2'),
+                  patch('cron_schedule.SYSTEM_CRON_D', cron_d)):
+                return host_cron_schedules(now=NOW)
+
+    def test_sunday_scrub_inside_wrapper_is_inferred(self):
+        sched = self.schedule()
+        self.assertTrue(sched['jobs'][0]['wrapper'])
+        self.assertNotIn('scrub', sched['next_by_operation'])
+        scrubs = [datetime(2026, 10, 4, 2, 9, tzinfo=TZ).timestamp(),
+                  datetime(2026, 10, 11, 2, 13, tzinfo=TZ).timestamp()]
+        result = infer_wrapper_scrub(sched, scrubs, now=NOW)
+        scrub = result['next_by_operation']['scrub']
+        self.assertTrue(scrub['inferred'])
+        self.assertEqual(scrub['next_display'], 'Sun 18 Oct 2026, 02:00 AM CDT')
+        self.assertIn('inside sync wrapper', scrub['source'])
+        tasks = pending_maintenance(sample_data(), now=NOW, cron=result)
+        job = {t['id']: t for t in tasks['items']}['scrub']
+        self.assertEqual(job['schedule']['status'], 'configured')
+        self.assertEqual(job['schedule']['label'], 'Next run (from run history)')
+
+    def test_single_or_mixed_weekday_scrubs_are_not_inferred(self):
+        sched = self.schedule()
+        one = [datetime(2026, 10, 11, 2, 13, tzinfo=TZ).timestamp()]
+        self.assertNotIn('scrub', infer_wrapper_scrub(sched, one, now=NOW)['next_by_operation'])
+        mixed = one + [datetime(2026, 10, 7, 2, 10, tzinfo=TZ).timestamp()]
+        self.assertNotIn('scrub', infer_wrapper_scrub(sched, mixed, now=NOW)['next_by_operation'])
+
+    def test_plain_snapraid_cron_is_not_a_wrapper(self):
+        sched = {'jobs': [{'operation': 'sync', 'wrapper': False, 'expression': '0 2 * * *',
+                           'timezone': 'America/Chicago', 'source': 'root crontab'}],
+                 'next_by_operation': {}}
+        scrubs = [datetime(2026, 10, 4, 2, 9, tzinfo=TZ).timestamp(),
+                  datetime(2026, 10, 11, 2, 13, tzinfo=TZ).timestamp()]
+        self.assertNotIn('scrub', infer_wrapper_scrub(sched, scrubs, now=NOW)['next_by_operation'])

@@ -1,9 +1,11 @@
 """Missing HDD regression tests, using synthetic host mounts and lsblk data."""
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
+os.environ.setdefault('DB_PATH', os.path.join(tempfile.gettempdir(), 'vod-health-ui-tests.sqlite3'))
 from disk_inventory import check_inventory, expected_from_config
 
 
@@ -136,3 +138,30 @@ class MissingDiskTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HostMountLabelTests(unittest.TestCase):
+    MOUNTS = [
+        {'path': '/', 'root': '/', 'major_minor': '9:2'},
+        {'path': '/var/log/journal', 'root': '/var/log/journal', 'major_minor': '9:2'},
+        {'path': '/docker', 'root': '/', 'major_minor': '9:3'},
+    ]
+
+    def test_bind_mount_of_subdirectory_does_not_name_root_array(self):
+        from disk_inventory import host_mount_point
+        self.assertEqual(host_mount_point('9:2', self.MOUNTS), '/')
+        self.assertEqual(host_mount_point('9:3', self.MOUNTS), '/docker')
+        self.assertIsNone(host_mount_point('9:9', self.MOUNTS))
+        self.assertIsNone(host_mount_point('9:2', [self.MOUNTS[1]]))
+
+    def test_dashboard_labels_md_by_host_mount_point(self):
+        import app as monitor
+        from unittest.mock import patch
+        with patch.object(monitor, 'device_major_minor', return_value='9:2'), \
+             patch.object(monitor, 'host_mounts', return_value=self.MOUNTS):
+            self.assertEqual(monitor.host_mount_label('/host/var/log/journal', 'md2'), '/')
+        with patch.object(monitor, 'device_major_minor', return_value=None):
+            self.assertEqual(monitor.host_mount_label('/mnt/disk01', 'sda1'), '/mnt/disk01')
+        with patch.object(monitor, 'get_df', return_value={'pct': 15, 'used_h': '63 GB', 'avail_h': '1', 'size_h': '2'}):
+            usage = monitor.usage_from_mount('/host/var/log/journal', 'md2', '/')
+        self.assertEqual((usage['mount'], usage['path'], usage['source']), ('/', '/host/var/log/journal', 'md2'))
