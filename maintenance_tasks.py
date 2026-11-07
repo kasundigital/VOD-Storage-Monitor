@@ -5,6 +5,7 @@ SnapRAID commands, schedules work, or modifies the host.
 """
 from datetime import datetime
 import time
+from snapshot_evidence import snapshot_current
 
 SNAPSHOT_MAX_AGE_SECONDS = 3600
 
@@ -50,6 +51,11 @@ def pending_maintenance(data, now=None, cron=None):
     evidence_ok = (snapshot_fresh and after_sync
                    and snap.get('status_ok') is True and snap.get('diff_ok') is True)
     pending = snap.get('pending_total') if snap.get('diff_ok') is True else None
+    current = snapshot_current(snap, now)
+    if not current:
+        # Keep historical values in the raw snapshot, never use them as live faults.
+        health = {}
+        pending = None
     historical = (f"Host snapshot {snap['snapshot_time']}" if snapshot_epoch else
                   'Host snapshot not collected')
     tasks = []
@@ -86,7 +92,7 @@ def pending_maintenance(data, now=None, cron=None):
                      'Disk checks and '+historical, 1)
     elif pending is not None and pending > 0:
         sync = _task('sync', 'SnapRAID sync', 'due', 'Sync needed',
-                     f'{pending:,} added, changed, or removed file(s) at the last snapshot.',
+                     f'{pending:,} file change(s) since sync at the recent snapshot. This does not mean the last sync failed.',
                      'Let downloads and imports finish, then run a controlled host sync.',
                      historical, 2)
     elif last_sync.get('stale') and last_sync.get('epoch') is not None:
@@ -118,7 +124,7 @@ def pending_maintenance(data, now=None, cron=None):
                       'Stored checks report an array or disk issue needing investigation.',
                       'Address the disk / sync issue before starting a scrub.',
                       historical, 3)
-    elif unscrubbed is None and not snap.get('scrub_stale'):
+    elif not current or (unscrubbed is None and not snap.get('scrub_stale')):
         scrub = _task('scrub', 'Verify scrub coverage', 'unknown', 'Not verified',
                       'No valid host snapshot of scrub coverage is available.',
                       'Capture a host status snapshot after maintenance has finished.',
@@ -181,8 +187,8 @@ def pending_maintenance(data, now=None, cron=None):
                 'source': scheduled['source']
             }
         elif cron.get('available'):
-            task['schedule'] = {'status': 'none', 'label': 'No matching cron job',
-                                'next_display': 'Not scheduled', 'source': 'Host crontab'}
+            task['schedule'] = {'status': 'none', 'label': 'No direct cron entry found',
+                                'next_display': 'Script/timer schedule not verified', 'source': 'Host crontab'}
         else:
             task['schedule'] = {'status': 'unknown', 'label': 'Schedule unavailable',
                                 'next_display': 'Could not read host cron',
@@ -202,3 +208,4 @@ def pending_maintenance(data, now=None, cron=None):
         title = 'No immediate maintenance tasks'
     return {'title': title, 'attention': actionable, 'counts': counts,
             'items': tasks, 'source_note': 'Read-only advice. Next-run dates are calculated from mounted host crontabs; actual execution is not guaranteed.'}
+

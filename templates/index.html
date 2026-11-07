@@ -42,8 +42,8 @@
 <div class="card health-card state-{{data.health_overview.cards.snapraid.level}}" id="heroSnapraid">
   <div class="card-top"><span>SnapRAID</span><span class="signal-pill state-{{data.health_overview.cards.snapraid.level}}" id="heroSnapraidSignal">{{{'ok':'Good','warn':'Review','bad':'Critical','unknown':'Unverified','busy':'Running'}[data.health_overview.cards.snapraid.level]}}</span></div>
   <strong id="snapHeroProtection">{{data.health_overview.cards.snapraid.label}}</strong>
-  <small>Last sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small>
-  <b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}} pending change(s){% else %}Diff unavailable{% endif %}</b>
+  <small>Last successful sync: <span id="snapHeroLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</span></small>
+  <b id="snapHeroPending">{% if data.snapraid.maintenance_running %}{% if data.snapraid.job.progress %}{{data.snapraid.job.progress.percent}}% · {{data.snapraid.job.progress.processed}} processed{% else %}Maintenance job running{% endif %}{% elif not data.snapraid.snapshot_current %}Current changes unknown{% elif data.snapraid.diff_ok %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}} pending change(s){% else %}Diff unavailable{% endif %}</b>
   <small class="card-caption" id="heroSnapraidDetail">{{data.health_overview.cards.snapraid.detail}}</small>
 </div>
 <div class="card health-card state-{{data.health_overview.cards.disks.level}}" id="heroDisks">
@@ -96,21 +96,22 @@
     <span id="snapProtectionPill" class="signal-pill state-{{data.health_overview.cards.snapraid.level}}" title="Snapshot-aware assessment; the last log alone is not live proof of protection">{{data.health_overview.cards.snapraid.label}}</span>
   </div>
 
+  <p class="info-note" id="snapEvidence">{{"Recent snapshot; file changes do not mean a sync failed." if data.snapraid.snapshot_current else "Historical or missing snapshot — current changes and array state are unknown. Refresh needed."}}</p>
   <div class="kv">
-    <span>Added</span><b id="snapAdded">{{data.snapraid.changes.added if data.snapraid.changes.added is not none else 'Unknown'}}</b>
-    <span>Updated</span><b id="snapUpdated">{{data.snapraid.changes.updated if data.snapraid.changes.updated is not none else 'Unknown'}}</b>
-    <span>Removed</span><b id="snapRemoved">{{data.snapraid.changes.removed if data.snapraid.changes.removed is not none else 'Unknown'}}</b>
-    <span>Moved</span><b id="snapMoved">{{data.snapraid.changes.moved if data.snapraid.changes.moved is not none else 'Unknown'}}</b>
+    <span>Added at snapshot</span><b id="snapAdded">{{data.snapraid.changes.added if data.snapraid.changes.added is not none else 'Unknown'}}</b>
+    <span>Updated at snapshot</span><b id="snapUpdated">{{data.snapraid.changes.updated if data.snapraid.changes.updated is not none else 'Unknown'}}</b>
+    <span>Removed at snapshot</span><b id="snapRemoved">{{data.snapraid.changes.removed if data.snapraid.changes.removed is not none else 'Unknown'}}</b>
+    <span>Moved at snapshot</span><b id="snapMoved">{{data.snapraid.changes.moved if data.snapraid.changes.moved is not none else 'Unknown'}}</b>
   </div>
 
   <div class="snap-meta">
-    <div><span>Last sync</span><b id="snapLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</b></div>
-    <div><span>Pending changes</span><b id="snapPending">{% if data.snapraid.maintenance_running %}Updating{% else %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}}{% endif %}</b></div>
-    <div><span>Status</span><b id="snapStatus">{{'Snapshot OK' if data.snapraid.status_ok is sameas true else ('Snapshot error' if data.snapraid.status_ok is sameas false else 'Not collected')}}</b></div>
-    <div><span>Diff</span><b id="snapDiff">{% if data.snapraid.maintenance_running %}Paused during {{data.snapraid.job.name}}{% else %}{{'Snapshot OK' if data.snapraid.diff_ok is sameas true else ('Snapshot error' if data.snapraid.diff_ok is sameas false else 'Not collected')}}{% endif %}</b></div>
+    <div><span>Last successful sync</span><b id="snapLastSync">{{data.snapraid.last_sync.display if data.snapraid.last_sync else 'Unknown'}}</b></div>
+    <div><span>Pending changes</span><b id="snapPending">{% if data.snapraid.maintenance_running %}Updating{% elif not data.snapraid.snapshot_current %}Unknown — refresh snapshot{% else %}{{data.snapraid.pending_total if data.snapraid.pending_total is not none else 'Unknown'}}{% endif %}</b></div>
+    <div><span>Status</span><b id="snapStatus">{{'Historical / unavailable' if not data.snapraid.snapshot_current else ('Snapshot OK' if data.snapraid.status_ok is sameas true else ('Snapshot error' if data.snapraid.status_ok is sameas false else 'Not collected'))}}</b></div>
+    <div><span>Diff</span><b id="snapDiff">{% if data.snapraid.maintenance_running %}Paused during {{data.snapraid.job.name}}{% else %}{{'Historical / unavailable' if not data.snapraid.snapshot_current else ('Snapshot OK' if data.snapraid.diff_ok is sameas true else ('Snapshot error' if data.snapraid.diff_ok is sameas false else 'Not collected'))}}{% endif %}</b></div>
   </div>
 
-  <div class="info-note">Monitoring only · Lock-free: the dashboard never runs SnapRAID commands. Status and diff are optional host-captured snapshots, not live checks. Snapshot: <b id="snapSnapshotTime">{{data.snapraid.snapshot_time or "Not collected"}}</b>. Scrub verified: <b id="snapScrubCoverage">{% if data.snapraid.scrub_coverage is not none %}{{data.snapraid.scrub_coverage}}%{% else %}Unknown{% endif %}</b>. Last sync log result: <b id="snapLastLogResult">{{data.snapraid.last_log_result}}</b>. Values may be stale.</div>
+  <div class="info-note">Monitoring only · Lock-free: the dashboard never runs SnapRAID commands. Status and diff are optional host-captured snapshots, not live checks. Snapshot: <b id="snapSnapshotTime">{{data.snapraid.snapshot_time or "Not collected"}}</b>. Scrub coverage at snapshot: <b id="snapScrubCoverage">{% if data.snapraid.scrub_coverage is not none %}{{data.snapraid.scrub_coverage}}%{% else %}Unknown{% endif %}</b>. Last sync log result: <b id="snapLastLogResult">{{data.snapraid.last_log_result}}</b>. Values may be stale.</div>
   {% set h = data.snapraid.health %}
   <div class="ops-grid" aria-live="polite">
     <div class="op"><span>Current job</span>
@@ -120,23 +121,23 @@
       {% set l = last_run.last %}
       <b id="opLast">{% if l %}{{l.kind|capitalize}} · <i class="pill {{l.level}}">{{l.status}}</i>{% else %}No runs recorded yet{% endif %}</b>
       <small id="opLastDetail">{% if l %}Ended {{l.ended or '-'}} ({{l.ended_age or '-'}}) · took {{l.duration}}{% else %}Recorded once a job is seen finishing{% endif %}</small></div>
-    <div id="opSyncCard" class="op {{'stale' if data.snapraid.last_sync and data.snapraid.last_sync.stale else ('state-ok' if data.snapraid.last_sync else 'state-unknown')}}"><span>Last sync</span>
+    <div id="opSyncCard" class="op {{'stale' if data.snapraid.last_sync and data.snapraid.last_sync.stale else ('state-ok' if data.snapraid.last_sync else 'state-unknown')}}"><span>Last successful sync</span>
       <b id="opSync">{{data.snapraid.last_sync.age if data.snapraid.last_sync else 'Unknown'}}</b>
       <small id="opSyncDetail">{% if data.snapraid.last_sync %}{{data.snapraid.last_sync.display}} · from {{data.snapraid.last_sync.source}}{% if data.snapraid.last_sync.stale %} · older than {{stale_hours|int}}h{% endif %}{% else %}-{% endif %}</small></div>
     <div class="op historical"><span>Last failure (history)</span>
       {% set f = last_run.last_failed %}
       <b id="opFail">{% if f %}{{f.kind|capitalize}} · {{f.ended_age or f.started}}{% else %}None recorded{% endif %}</b>
       <small id="opFailDetail">{% if f %}Historical incident · {{f.status}} · {{f.message}}{% else %}No recorded failures{% endif %}</small></div>
-    <div class="op {{'stale' if data.snapraid.scrub_stale else ''}}"><span>Scrub</span>
-      <b id="opScrub">{% if h.scrub_newest_days is not none %}Newest {{h.scrub_newest_days}}d ago{% else %}Unknown{% endif %}</b>
+    <div class="op {{'stale' if data.snapraid.snapshot_current and data.snapraid.scrub_stale else ''}}"><span>Scrub</span>
+      <b id="opScrub">{% if not data.snapraid.snapshot_current %}Historical / unavailable{% elif h.scrub_newest_days is not none %}Newest {{h.scrub_newest_days}}d ago{% else %}Unknown{% endif %}</b>
       <small id="opScrubDetail">{% if h.scrub_oldest_days is not none %}Oldest block {{h.scrub_oldest_days}}d · {{h.unscrubbed_pct if h.unscrubbed_pct is not none else '?'}}% never scrubbed{% else %}From host snapshot{% endif %}</small></div>
-    <div id="opArrayCard" class="op {{'bad' if h.errors or h.sync_in_progress else ('state-ok' if data.health_overview.cards.snapraid.level == 'ok' else 'state-unknown')}}"><span>Array state</span>
-      <b id="opArray">{% if h.errors %}{{h.errors}} error(s){% elif h.sync_in_progress %}Sync stopped at {{h.sync_in_progress}}%{% elif h.errors == 0 %}No errors{% else %}Unknown{% endif %}</b>
-      <small id="opArrayDetail">{% if h.sync_in_progress and not data.snapraid.maintenance_running %}Last sync did not finish{% else %}From host snapshot{% endif %}</small></div>
+    <div id="opArrayCard" class="op {{'bad' if data.snapraid.snapshot_current and (h.errors or h.sync_in_progress) else ('state-ok' if data.health_overview.cards.snapraid.level == 'ok' else 'state-unknown')}}"><span>Array state</span>
+      <b id="opArray">{% if not data.snapraid.snapshot_current %}Unknown — refresh snapshot{% elif h.errors %}{{h.errors}} error(s){% elif h.sync_in_progress %}Sync stopped at {{h.sync_in_progress}}%{% elif h.errors == 0 %}No errors{% else %}Unknown{% endif %}</b>
+      <small id="opArrayDetail">{% if data.snapraid.snapshot_current and h.sync_in_progress and not data.snapraid.maintenance_running %}Snapshot reports unfinished sync{% else %}From saved host snapshot{% endif %}</small></div>
   </div>
 
-  {% if data.snapraid.status_ok is sameas false %}<div class="warning">Saved SnapRAID status snapshot reports exit {{data.snapraid.status_rc}}.</div>{% endif %}
-  {% if data.snapraid.diff_ok is sameas false %}<div class="warning">Saved SnapRAID diff snapshot reports exit {{data.snapraid.diff_rc}}.</div>{% endif %}
+  {% if data.snapraid.status_ok is sameas false %}<div class="warning">Historical SnapRAID status snapshot reports exit {{data.snapraid.status_rc}}.</div>{% endif %}
+  {% if data.snapraid.diff_ok is sameas false %}<div class="warning">Historical SnapRAID diff snapshot reports exit {{data.snapraid.diff_rc}}.</div>{% endif %}
   {% if data.snapraid.snapshot_error %}<div class="warning">Snapshot could not be read: {{data.snapraid.snapshot_error}}</div>{% endif %}
   {% if data.snapraid.warnings %}<div class="warning">{{data.snapraid.warnings|join(' · ')}}</div>{% endif %}
   <details><summary>Parity paths</summary><pre>{{data.snapraid.config.parity_paths|join('\n') if data.snapraid.config.parity_paths else 'No parity paths detected'}}</pre></details>
@@ -287,10 +288,9 @@ function refreshHealthOverview(overview){
     setText('snapHeroProtection',snap.label||'Not verified');
     const array=document.getElementById('opArrayCard');
     if(array){
-      // An error in a saved status remains visible even when the overall
-      // parity state is a warning or verification is incomplete.
+      // Only current snapshot errors affect the live array-state indicator.
       const h=window._latestSnapraidHealth||{};
-      applyState(array,h.errors || h.sync_in_progress ? 'bad' : (snap.level==='ok'?'ok':'unknown'));
+      applyState(array,window._latestSnapshotCurrent && (h.errors || h.sync_in_progress) ? 'bad' : (snap.level==='ok'?'ok':'unknown'));
     }
   }
 }
@@ -317,7 +317,7 @@ async function pollObservation(){
     setText('opLastDetail', l ? ('Ended '+(l.ended||'-')+' ('+(l.ended_age||'-')+') · took '+l.duration) : 'Recorded once a job is seen finishing');
     const f=lr.last_failed;
     setText('opFail', f ? (cap(f.kind)+' · '+(f.ended_age||f.started)) : 'None recorded');
-    setText('opFailDetail', f ? (f.status+' · '+f.message) : '-');
+    setText('opFailDetail', f ? ('Historical incident · '+f.status+' · '+f.message) : '-');
   }catch(e){}
 }
 function refreshDiskInventory(inv){
@@ -358,19 +358,26 @@ async function refreshStatus(){
     if(j.snapraid){
       const s=j.snapraid;
       window._latestSnapraidHealth=s.health||{};
+      window._latestSnapshotCurrent=!!s.snapshot_current;
       const array=document.getElementById('opArrayCard');
-      if(array) applyState(array,s.health?.errors || s.health?.sync_in_progress?'bad':(j.health_overview?.cards?.snapraid?.level==='ok'?'ok':'unknown'));
+      if(array) applyState(array,s.snapshot_current && (s.health?.errors || s.health?.sync_in_progress)?'bad':(j.health_overview?.cards?.snapraid?.level==='ok'?'ok':'unknown'));
       const set=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
       set('snapAdded', s.changes?.added ?? 'Unknown');
       set('snapUpdated', s.changes?.updated ?? 'Unknown');
       set('snapRemoved', s.changes?.removed ?? 'Unknown');
       set('snapMoved', s.changes?.moved ?? 'Unknown');
-      set('snapPending', s.maintenance_running ? 'Updating' : (s.pending_total ?? 'Unknown'));
+      set('snapPending', s.maintenance_running ? 'Updating' : (!s.snapshot_current ? 'Unknown — refresh snapshot' : (s.pending_total ?? 'Unknown')));
+      set('snapEvidence', s.snapshot_current ? 'Recent snapshot; file changes do not mean a sync failed.' : 'Historical or missing snapshot — current changes and array state are unknown. Refresh needed.');
+      const h=s.health||{};
+      set('opArray', !s.snapshot_current ? 'Unknown — refresh snapshot' : (h.errors ? h.errors+' error(s)' : (h.sync_in_progress ? 'Snapshot reports unfinished sync' : (h.errors===0 ? 'No errors at snapshot' : 'Unknown'))));
+      set('opArrayDetail', 'From saved host snapshot');
+      set('opScrub', !s.snapshot_current ? 'Historical / unavailable' : (h.scrub_newest_days == null ? 'Unknown' : 'Newest '+h.scrub_newest_days+'d ago'));
+      set('opScrubDetail', 'Coverage and block ages are from the saved snapshot');
       set('snapSnapshotTime', s.snapshot_time || 'Not collected');
       set('snapScrubCoverage', s.scrub_coverage == null ? 'Unknown' : s.scrub_coverage + '%');
       set('snapLastLogResult', s.last_log_result || 'Unknown');
-      set('snapStatus', s.status_ok === true ? 'Snapshot OK' : (s.status_ok === false ? 'Snapshot error' : 'Not collected'));
-      set('snapDiff', s.diff_ok === true ? 'Snapshot OK' : (s.diff_ok === false ? 'Snapshot error' : 'Not collected'));
+      set('snapStatus', !s.snapshot_current ? 'Historical / unavailable' : (s.status_ok === true ? 'Snapshot OK' : (s.status_ok === false ? 'Snapshot error' : 'Not collected')));
+      set('snapDiff', !s.snapshot_current ? 'Historical / unavailable' : (s.diff_ok === true ? 'Snapshot OK' : (s.diff_ok === false ? 'Snapshot error' : 'Not collected')));
       const lastSync=s.last_sync?.display || 'Unknown';
       set('snapLastSync', lastSync);
       set('snapHeroLastSync', lastSync);
@@ -378,7 +385,7 @@ async function refreshStatus(){
 
       const heroPending = s.maintenance_running
         ? (s.job?.progress ? (s.job.progress.percent+'% · '+s.job.progress.processed+' processed') : 'Maintenance job running')
-        : (s.diff_ok ? ((s.pending_total ?? 'Unknown')+' pending change(s)') : 'Diff unavailable');
+        : (!s.snapshot_current ? 'Current changes unknown' : (s.diff_ok ? ((s.pending_total ?? 'Unknown')+' pending change(s)') : 'Diff unavailable'));
       set('snapHeroPending', heroPending);
 
 
@@ -404,3 +411,4 @@ pollObservation();
 setInterval(()=>{ if(!document.hidden && !document.querySelector('details[open]')) location.reload(); }, 300000);
 </script>
 </body></html>
+

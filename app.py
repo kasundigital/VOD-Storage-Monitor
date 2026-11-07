@@ -9,11 +9,13 @@ from health_status import assess_health
 from maintenance_tasks import pending_maintenance
 from cron_schedule import host_cron_schedules
 from host_sync_journal import last_successful_host_sync
+from maintenance_logs import completed_sync_log
+from snapshot_evidence import snapshot_current
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv('DB_PATH', '/data/vodmon.db'))
 SNAPRAID_CONFIG = os.getenv('SNAPRAID_CONFIG', '/etc/snapraid.conf')
-SNAPRAID_LOG_PATH = os.getenv('SNAPRAID_LOG_PATH', '/docker/snapraid-recovery-backup/resync-final.log')
+SNAPRAID_LOG_PATH = os.getenv('SNAPRAID_LOG_PATH', '/host/snapraid-maintenance/sync-*.log')
 SNAPRAID_SNAPSHOT_PATH = os.getenv('SNAPRAID_SNAPSHOT_PATH', '/docker/vod-monitor/data/snapraid-snapshot.json')
 SNAPRAID_SCRUB_LOG_PATH = os.getenv('SNAPRAID_SCRUB_LOG_PATH', '')
 REFRESH_SECONDS = int(os.getenv('REFRESH_SECONDS', '60'))
@@ -22,7 +24,7 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 SECRET_KEY = os.getenv('SECRET_KEY', 'change-this-secret')
 SYNC_STALE_HOURS = float(os.getenv('SYNC_STALE_HOURS', '26'))
 SCRUB_STALE_DAYS = float(os.getenv('SCRUB_STALE_DAYS', '14'))
-APP_VERSION = os.getenv('APP_VERSION', '0.6.7')
+APP_VERSION = os.getenv('APP_VERSION', '0.6.8')
 BUILD_SHA = os.getenv('BUILD_SHA', 'dev')
 
 app = Flask(__name__)
@@ -93,7 +95,7 @@ def empty_dashboard():
             'status_raw':'','diff_raw':'',
             'changes':{'equal':0,'added':0,'removed':0,'updated':0,'moved':0,'copied':0,'restored':0},
             'pending_total':None,'protection':'Initializing','warnings':[],'last_sync':None,
-            'snapshot_time':None,'snapshot_error':None,'scrub_coverage':None,
+            'snapshot_time':None,'snapshot_error':None,'scrub_coverage':None,'snapshot_current':False,
             'last_log_result':'Unknown','health':parse_status(''),'scrub_stale':False,
             'maintenance_running':False,'job':{'name':None,'progress':None},
             'config':{'data_disks':0,'parity_levels':0,'content_copies':0,'parity_paths':[]}
@@ -354,6 +356,8 @@ def history(limit=20, where='', params=()):
 
 def status_level(status):
     s = (status or '').lower()
+    if s in ('finished', 'unknown'):
+        return 'unknown'
     if s in OK_STATUSES:
         return 'ok'
     if s in NON_FAILURE_STATUSES:
@@ -509,9 +513,12 @@ def snapraid_last_sync():
     synced = last_run_summary().get('last_sync_ok')
     if synced and synced.get('ended_epoch'):
         candidates.append((synced['ended_epoch'], 'run history'))
-    journal_ts = last_successful_host_sync()
+    journal_ts = last_successful_host_sync(background=True)
     if journal_ts is not None:
         candidates.append((journal_ts, 'host systemd journal'))
+    log_ts = completed_sync_log(SNAPRAID_LOG_PATH)
+    if log_ts is not None:
+        candidates.append((log_ts, 'completed maintenance log'))
     if not candidates:
         return None
     ts, source = max(candidates, key=lambda item: item[0])
@@ -584,6 +591,9 @@ def snapraid_summary():
 
     # Scrub age, errors and interrupted sync come from the host snapshot only.
     health = parse_status(status if status_ok else '')
+    last_sync = snapraid_last_sync()
+    current = snapshot_current({'snapshot_time': snapshot['captured_at'] if snapshot else None,
+                                'last_sync': last_sync})
 
     if running:
         protection = {'sync': 'Syncing', 'scrub': 'Scrubbing', 'fix': 'Repair in progress',
@@ -609,7 +619,7 @@ def snapraid_summary():
         'changes': pending, 'pending_total': pending_total,
         'protection': protection, 'warnings': warnings, 'health': health,
         'scrub_stale': scrub_stale,
-        'last_sync': snapraid_last_sync(), 'config': config,
+        'last_sync': last_sync, 'config': config, 'snapshot_current': current,
         'snapshot_time': snapshot['captured_at'] if snapshot else None,
         'snapshot_error': snapshot_error,
         'scrub_coverage': coverage, 'last_log_result': last_log_result,
@@ -933,3 +943,4 @@ start_background_threads()
 
 if __name__=='__main__':
     app.run(host='0.0.0.0',port=int(os.getenv('PORT','8099')),debug=False)
+

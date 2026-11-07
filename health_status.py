@@ -3,8 +3,9 @@
 These labels do not claim live SnapRAID verification. A recent host-captured
 snapshot plus recent sync history is required for a green SnapRAID indicator.
 """
-from datetime import datetime, timezone
+from datetime import datetime
 import time
+from snapshot_evidence import snapshot_current
 
 _LEVEL_ORDER = {'ok': 0, 'unknown': 1, 'busy': 2, 'warn': 3, 'bad': 4}
 
@@ -15,19 +16,6 @@ def _item(level, label, detail):
 
 def _worst(*items):
     return max(items, key=lambda x: _LEVEL_ORDER[x['level']])
-
-
-def _recent_snapshot(value, now):
-    if not value:
-        return False
-    try:
-        stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        if stamp.tzinfo is None:
-            return False
-        age = now - stamp.timestamp()
-        return -300 <= age <= 3600  # host snapshot is at most an hour old
-    except (TypeError, ValueError, OverflowError):
-        return False
 
 
 def assess_health(data, now=None):
@@ -88,15 +76,21 @@ def assess_health(data, now=None):
     health = snap.get('health') or {}
     synced = snap.get('last_sync') or {}
     pending = snap.get('pending_total')
-    fresh = _recent_snapshot(snap.get('snapshot_time'), now)
+    fresh = snapshot_current(snap, now)
     if snap.get('maintenance_running'):
         name = (snap.get('job') or {}).get('name') or 'operation'
         snap_state = _item('busy', 'Maintenance running', f'Host SnapRAID {name} is running')
+    elif not fresh:
+        if synced.get('stale') and synced.get('epoch') is not None:
+            snap_state = _item('warn', 'Sync overdue', f"Last verified sync: {synced.get('age', 'older than expected')}; snapshot needs refresh")
+        else:
+            snap_state = _item('unknown', 'Snapshot outdated' if snap.get('snapshot_time') else 'Verification needed',
+                               'Current pending changes and array state are unknown; refresh the host snapshot')
     elif (snap.get('status_ok') is False or snap.get('diff_ok') is False
           or health.get('errors') or health.get('sync_in_progress')):
         snap_state = _item('bad', 'Check SnapRAID', 'Snapshot reports an error or unfinished synchronization')
     elif pending is not None and pending > 0:
-        snap_state = _item('warn', 'Changes pending', f'{pending} change(s) at last snapshot')
+        snap_state = _item('warn', 'Changes since sync', f'{pending} change(s) at snapshot; not a failed sync')
     elif synced.get('stale') and synced.get('epoch') is not None:
         snap_state = _item('warn', 'Sync overdue', f"Last verified sync: {synced.get('age', 'older than expected')}")
     elif not synced.get('epoch'):
@@ -133,3 +127,4 @@ def assess_health(data, now=None):
             summary_parts.append(f"{counts[level]} {word}")
     detail = ' · '.join(summary_parts) + ' · SnapRAID checks are snapshot-based, not live.'
     return {'level': worst['level'], 'label': title, 'detail': detail, 'cards': cards}
+

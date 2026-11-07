@@ -150,7 +150,7 @@ class MaintenanceTasksTests(unittest.TestCase):
         result=pending_maintenance(sample_data(),now=NOW,cron={'available':True,'jobs':[]})
         jobs={t['id']:t for t in result['items']}
         self.assertEqual(jobs['sync']['schedule']['status'],'none')
-        self.assertEqual(jobs['scrub']['schedule']['next_display'],'Not scheduled')
+        self.assertEqual(jobs['scrub']['schedule']['next_display'],'Script/timer schedule not verified')
 
     def test_disk_fault_blocks_sync_and_scrub(self):
         d=sample_data()
@@ -181,3 +181,4 @@ class MaintenanceTasksTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

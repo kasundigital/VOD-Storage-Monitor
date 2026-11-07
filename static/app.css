@@ -129,6 +129,7 @@
 .op.state-ok{border-color:rgba(61,220,151,.3)}
 .op.state-ok b{color:var(--good)}
 .op.state-unknown b{color:var(--muted)}
+.pill.unknown{color:var(--muted);background:rgba(148,163,184,.08)}
 .op.historical{border-style:dashed}
 .op.historical>span{text-transform:none}
 @media(max-width:700px){
@@ -175,3 +176,4 @@
 .maintenance-cron small{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
 .maintenance-cron-configured{border-color:rgba(110,168,254,.33);background:rgba(110,168,254,.075)}
 .maintenance-cron-configured>span{color:#bfd9ff}
+
