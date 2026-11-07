@@ -6,6 +6,7 @@ snapshot plus recent sync history is required for a green SnapRAID indicator.
 from datetime import datetime
 import time
 from snapshot_evidence import snapshot_current
+from maintenance_tasks import scheduled_sync_pending, SYNC_STALE_HOURS
 
 _LEVEL_ORDER = {'ok': 0, 'unknown': 1, 'busy': 2, 'warn': 3, 'bad': 4}
 
@@ -18,7 +19,7 @@ def _worst(*items):
     return max(items, key=lambda x: _LEVEL_ORDER[x['level']])
 
 
-def assess_health(data, now=None):
+def assess_health(data, now=None, cron=None, stale_hours=SYNC_STALE_HOURS):
     """Return source-aware presentation states for banner and four existing cards."""
     now = time.time() if now is None else now
     storage = data.get('storage') or {}
@@ -77,6 +78,7 @@ def assess_health(data, now=None):
     synced = snap.get('last_sync') or {}
     pending = snap.get('pending_total')
     fresh = snapshot_current(snap, now)
+    scheduled_sync = scheduled_sync_pending(snap, cron, now, stale_hours)
     if snap.get('maintenance_running'):
         name = (snap.get('job') or {}).get('name') or 'operation'
         snap_state = _item('busy', 'Maintenance running', f'Host SnapRAID {name} is running')
@@ -89,7 +91,7 @@ def assess_health(data, now=None):
     elif (snap.get('status_ok') is False or snap.get('diff_ok') is False
           or health.get('errors') or health.get('sync_in_progress')):
         snap_state = _item('bad', 'Check SnapRAID', 'Snapshot reports an error or unfinished synchronization')
-    elif pending is not None and pending > 0:
+    elif pending is not None and pending > 0 and not scheduled_sync:
         snap_state = _item('warn', 'Changes since sync', f'{pending} change(s) at snapshot; not a failed sync')
     elif synced.get('stale') and synced.get('epoch') is not None:
         snap_state = _item('warn', 'Sync overdue', f"Last verified sync: {synced.get('age', 'older than expected')}")
@@ -103,6 +105,9 @@ def assess_health(data, now=None):
         snap_state = _item('unknown', 'Incomplete snapshot', 'Host status did not confirm zero errors and a finished sync')
     elif snap.get('scrub_stale') or health.get('unscrubbed_pct') == 100:
         snap_state = _item('warn', 'Scrub needs attention', 'Latest snapshot indicates scrub maintenance is needed')
+    elif pending:
+        snap_state = _item('ok', 'Sync scheduled',
+                           f"{pending} change(s) since last sync · next scheduled sync {scheduled_sync.get('next_display', '')}".rstrip())
     else:
         snap_state = _item('ok', 'Verified at snapshot', 'No pending changes or reported errors in recent host snapshot')
 

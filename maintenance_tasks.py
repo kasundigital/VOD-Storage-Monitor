@@ -8,6 +8,27 @@ import time
 from snapshot_evidence import snapshot_current
 
 SNAPSHOT_MAX_AGE_SECONDS = 3600
+SYNC_STALE_HOURS = 26
+
+
+def scheduled_sync_pending(snap, cron, now=None, stale_hours=SYNC_STALE_HOURS):
+    """Return the next cron sync if pending changes are normal daily drift.
+
+    Changes accumulate between scheduled syncs. They are only expected when
+    the last verified sync is recent and the next scheduled sync will run
+    before that sync becomes stale. A missed cron run makes the last sync
+    stale, so the warning comes back on its own.
+    """
+    now = time.time() if now is None else now
+    last_sync = (snap or {}).get('last_sync') or {}
+    scheduled = ((cron or {}).get('next_by_operation') or {}).get('sync')
+    epoch = last_sync.get('epoch')
+    if not scheduled or epoch is None or last_sync.get('stale'):
+        return None
+    next_epoch = scheduled.get('next_epoch')
+    if next_epoch is None or not now <= next_epoch <= epoch + stale_hours * 3600:
+        return None
+    return scheduled
 
 
 def _snapshot_epoch(value):
@@ -27,7 +48,7 @@ def _task(id, title, status, label, detail, next_step, source, priority):
                 next_step=next_step, source=source, priority=priority)
 
 
-def pending_maintenance(data, now=None, cron=None):
+def pending_maintenance(data, now=None, cron=None, stale_hours=SYNC_STALE_HOURS):
     """Build the currently observed to-do list from collected monitor data.
 
     Statuses: due, waiting, running, blocked, unknown, done.
@@ -59,6 +80,7 @@ def pending_maintenance(data, now=None, cron=None):
     historical = (f"Host snapshot {snap['snapshot_time']}" if snapshot_epoch else
                   'Host snapshot not collected')
     tasks = []
+    scheduled_sync = scheduled_sync_pending(snap, cron, now, stale_hours)
 
     failed = smart.get('failed') or 0
     missing = inventory.get('missing') or 0
@@ -90,6 +112,12 @@ def pending_maintenance(data, now=None, cron=None):
                      'Disk health or mount issues require attention before syncing.',
                      'Resolve disk warnings above; then review the SnapRAID state.',
                      'Disk checks and '+historical, 1)
+    elif pending is not None and pending > 0 and scheduled_sync:
+        sync = _task('sync', 'SnapRAID sync', 'waiting', 'Scheduled sync',
+                     f'{pending:,} file change(s) since the last sync at the recent snapshot. '
+                     'The next scheduled sync will protect them.',
+                     'No action needed. Avoid heavy imports while the scheduled sync runs.',
+                     historical, 2)
     elif pending is not None and pending > 0:
         sync = _task('sync', 'SnapRAID sync', 'due', 'Sync needed',
                      f'{pending:,} file change(s) since sync at the recent snapshot. This does not mean the last sync failed.',
@@ -179,7 +207,8 @@ def pending_maintenance(data, now=None, cron=None):
         scheduled = next_jobs.get(task['id'])
         if scheduled:
             task['schedule'] = {
-                'status': 'configured', 'label': 'Next cron run',
+                'status': 'configured',
+                'label': 'Next run (from run history)' if scheduled.get('inferred') else 'Next cron run',
                 'next_display': scheduled['next_display'],
                 'next_iso': scheduled['next_iso'],
                 'expression': scheduled['expression'],
