@@ -4,6 +4,16 @@ Monitor mergerfs capacity, mdadm RAID arrays, HDD/NVMe SMART health, and externa
 
 **The web application never invokes the `snapraid` executable — not even `status` or `diff`.** SnapRAID uses an exclusive content lock for those commands, and a 60-second dashboard poll previously raced with manually launched scrubs. This release removes that source of contention entirely.
 
+## Snapshot accuracy and startup (v0.6.8)
+
+Old status/diff snapshots are now labeled **Historical / unavailable**. Old pending changes or interrupted-sync reports no longer become current sync warnings; the snapshot refresh task remains visible. Fresh file differences are labeled **Changes since sync**, which does not mean the preceding sync failed. Current disk faults and errors in a recent snapshot still require attention.
+
+**Last successful sync** also checks completed logs from the known `snapraid-maintenance.sh sync` wrapper. It requires the sync header, start marker, and final `=== COMPLETED SUCCESSFULLY ===` footer followed by the host date. A bare `Everything OK` cannot prove that content saving and verification finished. Up to 20 newest matching logs are examined; completed-log modification time is used as the completion evidence. For Sunday runs that include a scrub, this time is the end of the whole maintenance run. This does not rewrite old database history or claim current parity protection.
+
+Host journal searches now run in the background, so they do not hold up the first storage collection. A result appears after a later collection; disk checks still take time. Missing direct cron entries say **Script/timer schedule not verified**, because a scrub may be invoked indirectly inside a sync script. No maintenance is launched by the dashboard.
+
+Update only after the new image has been published successfully. Back up Compose and `.env`, preserve `./data`, then pull/recreate only `vod-monitor`. To roll back, use the previous image digest and saved configuration with the same data directory. This release makes no database migrations.
+
 ## Pending maintenance and next host cron runs (v0.6.7)
 
 The **Pending Maintenance Tasks** section is a **read-only display**, not a control panel. It reports Sync, Scrub, status/diff snapshot refresh, and disk health tasks using the latest captured monitoring information. A task can be Due, Waiting, Running, Blocked, Unknown, or Done; a completed status reflects saved observations and is not a live guarantee.

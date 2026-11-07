@@ -113,16 +113,34 @@ def _scan_successful_host_sync():
     return None
 
 
-def last_successful_host_sync():
+def _refresh_sync_cache():
+    try:
+        value = _scan_successful_host_sync()
+        with _sync_cache_lock:
+            _sync_cache.update(value=value, expires=time.monotonic() + SYNC_CACHE_TTL_SECONDS)
+        return value
+    except Exception:
+        logger.exception('Host SnapRAID journal refresh failed')
+        with _sync_cache_lock:
+            _sync_cache['expires'] = time.monotonic() + SYNC_CACHE_TTL_SECONDS
+    finally:
+        with _sync_cache_lock:
+            _sync_cache['refreshing'] = False
+
+
+def last_successful_host_sync(background=False):
     """Cached successful sync from host journal, safe for frequent UI polling.
 
     Cache even a negative result for five minutes to avoid repeatedly scanning
     busy journals. A new successful sync may take up to five minutes to display.
     """
     with _sync_cache_lock:
-        if time.monotonic() < _sync_cache['expires']:
+        if time.monotonic() < _sync_cache['expires'] or _sync_cache.get('refreshing'):
             return _sync_cache['value']
-        value = _scan_successful_host_sync()
-        _sync_cache['value'] = value
-        _sync_cache['expires'] = time.monotonic() + SYNC_CACHE_TTL_SECONDS
-        return value
+        _sync_cache['refreshing'] = True
+        previous = _sync_cache['value']
+    if background:
+        threading.Thread(target=_refresh_sync_cache, daemon=True, name='host-sync-journal').start()
+        return previous
+    return _refresh_sync_cache()
+

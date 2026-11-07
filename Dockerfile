@@ -1,5 +1,5 @@
 FROM ubuntu:24.04
-ARG APP_VERSION=0.6.7
+ARG APP_VERSION=0.6.8
 ARG BUILD_SHA=dev
 ENV APP_VERSION=${APP_VERSION}
 ENV BUILD_SHA=${BUILD_SHA}
@@ -11,3 +11,4 @@ RUN pip3 install --break-system-packages --no-cache-dir -r requirements.txt
 COPY . .
 EXPOSE 8099
 CMD ["gunicorn","-w","1","--threads","4","-b","0.0.0.0:8099","--timeout","180","app:app"]
+
