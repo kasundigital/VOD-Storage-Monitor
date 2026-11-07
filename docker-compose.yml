@@ -12,7 +12,7 @@ services:
       - SYNC_STALE_HOURS=${SYNC_STALE_HOURS:-26}
       - SCRUB_STALE_DAYS=${SCRUB_STALE_DAYS:-14}
       - SNAPRAID_CONFIG=${SNAPRAID_CONFIG:-/etc/snapraid.conf}
-      - SNAPRAID_LOG_PATH=${SNAPRAID_LOG_PATH:-/docker/snapraid-recovery-backup/resync-final.log}
+      - SNAPRAID_LOG_PATH=${SNAPRAID_LOG_PATH:-/host/snapraid-maintenance/sync-*.log}
       - SNAPRAID_SCRUB_LOG_PATH=${SNAPRAID_SCRUB_LOG_PATH:-}
       - SNAPRAID_SNAPSHOT_PATH=${SNAPRAID_SNAPSHOT_PATH:-/docker/vod-monitor/data/snapraid-snapshot.json}
       - ENABLE_DOCKER_MONITOR=${ENABLE_DOCKER_MONITOR:-false}
@@ -22,6 +22,8 @@ services:
       - ./data:/data
       - /etc/snapraid.conf:/etc/snapraid.conf:ro
       - /var/lib/snapraid:/var/lib/snapraid:ro
+      # Scheduled host sync logs; keep readable across monitor updates.
+      - /var/log/snapraid-maintenance:/host/snapraid-maintenance:ro
       # Read host systemd-run sync completion records without executing SnapRAID.
       - /var/log/journal:/host/var/log/journal:ro
       - /run/log/journal:/host/run/log/journal:ro
@@ -37,3 +39,4 @@ services:
       - /dev:/dev:ro
     privileged: true
     restart: unless-stopped
+
