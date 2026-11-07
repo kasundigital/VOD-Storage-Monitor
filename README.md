@@ -83,7 +83,11 @@ Image: `ghcr.io/kasundigital/vod-storage-monitor:latest`.
 
 The default Compose file intentionally keeps `/var/lib/snapraid:/var/lib/snapraid:ro`. This is safe because the monitor **never calls SnapRAID**, and therefore never tries to create `snapraid.content.lock`. The earlier workaround of switching this mount to `:rw` is **not needed and should be reverted** when deploying this release.
 
-The app reads the configured external sync log (`SNAPRAID_LOG_PATH`, default `/docker/snapraid-recovery-backup/resync-final.log`). It reads existing files through the read-only `/docker:/docker:ro` bind mount. Set `SNAPRAID_SCRUB_LOG_PATH` to the actual existing scrub log if you want that log displayed during a running scrub. Logs may be historical; the process indicator is independent.
+The Compose deployment reads scheduled host sync logs using `SNAPRAID_LOG_PATH=/host/snapraid-maintenance/sync-*.log`. The read-only bind `/var/log/snapraid-maintenance:/host/snapraid-maintenance:ro` exposes the host maintenance logs; the newest matching file is selected. Other log locations remain configurable, provided they are mounted read-only into the container. Set `SNAPRAID_SCRUB_LOG_PATH` to the actual existing scrub log if you want that log displayed during a running scrub. Logs may be historical; the process indicator is independent.
+
+For existing installations, replace the old recovery-log value in `.env` with the maintenance-log path above, add the new bind mount (or download the updated Compose file), and recreate only the monitor with `docker compose up -d --no-deps vod-monitor`. The updater preserves `.env`, so it does not migrate an explicitly configured old log path. Keep `.env` and `./data` intact; back up the Compose file and `.env` before editing. To roll back, restore those configuration backups and recreate only the monitor.
+
+Verify access with `docker exec vod-monitor sh -c 'printenv SNAPRAID_LOG_PATH; ls -lt /host/snapraid-maintenance | head'`. The dashboard can verify future observed runs from their current logs; changing this path does not backfill old `Finished` history entries or refresh the saved status/diff snapshot. A Sunday scrub invoked inside the sync script may share its `sync-*.log`; indirect scrub scheduling is not discovered from cron. Run the existing snapshot capture script separately when all SnapRAID maintenance is idle to refresh pending-change and scrub coverage values.
 
 ### Optional accurate status/diff snapshot (manual, host only)
 
@@ -159,3 +163,4 @@ python3 -m unittest discover -s tests -v
 ```
 
 The regression suite asserts that status refresh never invokes SnapRAID, even when idle, and that unavailable snapshot data is reported as unknown.
+
